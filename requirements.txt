@@ -1,0 +1,16 @@
+anthropic>=0.69
+python-docx>=1.1
+google-api-python-client>=2.140
+google-auth>=2.34
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
+playwright>=1.46
+python-dotenv>=1.0
+feedparser>=6.0
+beautifulsoup4>=4.12
+requests>=2.32
+lxml>=5.3
+
+# dev / test
+pytest>=8.3
+pytest-mock>=3.14

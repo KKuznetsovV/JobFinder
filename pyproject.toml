@@ -1,0 +1,9 @@
+[project]
+name = "jobfinder"
+version = "0.1.0"
+description = "AI job application assistant: finds postings, drafts cover letters, applies with approval."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
