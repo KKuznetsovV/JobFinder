@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets & local config
+.env
+credentials/*.json
+!credentials/.gitkeep
+token.json
+gmail_token.json
+*.token.json
+
+# Runtime data (never commit real application data)
+data/*.db
+data/*.sqlite3
+data/*.sqlite3-journal
+storage_state.json
+chrome-profile/
+
+# Real resumes (user-provided, not sample/fixture data)
+resumes/*.docx
+!resumes/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/settings.json
