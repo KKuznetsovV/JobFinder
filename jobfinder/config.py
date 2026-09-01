@@ -33,6 +33,9 @@ APPLICANT_NAME = os.environ.get("APPLICANT_NAME", "Kirill Kuznetsov")
 
 # --- Anthropic -------------------------------------------------------------
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+# Required only for multi-workspace personal API keys (Console -> Settings ->
+# Workspaces); leave unset for a workspace-scoped or single-workspace key.
+ANTHROPIC_WORKSPACE_ID = os.environ.get("ANTHROPIC_WORKSPACE_ID", "")
 
 # --- Gmail (least-privilege scopes: read to poll, send to notify/dispatch) --
 GMAIL_CLIENT_SECRET_FILE = Path(
@@ -47,7 +50,7 @@ GMAIL_SCOPES = [
 
 # --- Scheduling / thresholds / pacing ---------------------------------------
 JOB_POLL_INTERVAL_HOURS = 3
-RELEVANCE_THRESHOLD = 0.6  # 0-1 score from the relevance-filter Claude call
+RELEVANCE_THRESHOLD = 0.45  # 0-1 score from the relevance-filter Claude call
 MAX_REVISION_ROUNDS = 3
 DAILY_APPLICATION_CAP = int(os.environ.get("DAILY_APPLICATION_CAP", "15"))
 SCRAPE_MIN_DELAY_SECONDS = 3
