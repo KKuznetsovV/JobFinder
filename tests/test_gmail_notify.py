@@ -83,3 +83,34 @@ def test_send_approval_request_updates_application(tmp_path, mocker):
     reloaded = store.get_application(application.id, db_path=db_path)
     assert reloaded.status == ApplicationStatus.NOTIFIED
     assert reloaded.gmail_thread_id == "thread-1"
+
+
+def test_build_revision_email_is_a_reply_with_revised_letter(tmp_path):
+    job = _job()
+    application, _ = _application(tmp_path, job)
+    application.cover_letter = "Shorter revised letter."
+
+    message = notify.build_revision_email(application, job)
+
+    assert message["Subject"].startswith("Re: Approve application")
+    body = message.get_content()
+    assert "Shorter revised letter." in body
+
+
+def test_send_revision_request_keeps_thread_and_sets_notified(tmp_path, mocker):
+    job = _job()
+    application, db_path = _application(tmp_path, job)
+    application.gmail_thread_id = "thread-1"
+    application.status = ApplicationStatus.REVISION_REQUESTED
+    store.update_application(application, db_path=db_path)
+    send_spy = mocker.patch(
+        "jobfinder.gmail.notify.send_raw_message",
+        return_value={"threadId": "thread-1", "id": "msg-2"},
+    )
+
+    updated = notify.send_revision_request(object(), application, job, db_path=db_path)
+
+    assert updated.status == ApplicationStatus.NOTIFIED
+    assert updated.gmail_last_message_id == "msg-2"
+    send_spy.assert_called_once()
+    assert send_spy.call_args.kwargs["thread_id"] == "thread-1"

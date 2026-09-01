@@ -53,7 +53,32 @@ def _load_style_reference() -> str:
         return ""
 
 
-def _generate_draft(job: JobPosting, resume: dict, style_reference: str, client) -> str:
+def _generate_draft(
+    job: JobPosting,
+    resume: dict,
+    style_reference: str,
+    client,
+    revision_feedback: str | None = None,
+    previous_letter: str | None = None,
+) -> str:
+    if revision_feedback and previous_letter:
+        user_content = (
+            f"Revise the cover letter draft below per the user's feedback. Keep it "
+            f"grounded strictly in the resume - never invent anything new.\n\n"
+            f"Previous draft:\n{previous_letter}\n\n"
+            f"User feedback: {revision_feedback}\n\n"
+            f"Job posting:\nTitle: {job.title}\n"
+            f"Company: {job.company}\n"
+            f"Description: {job.description}"
+        )
+    else:
+        user_content = (
+            f"Write a cover letter for this job posting:\n"
+            f"Title: {job.title}\n"
+            f"Company: {job.company}\n"
+            f"Description: {job.description}"
+        )
+
     message = create_message_with_retry(
         client,
         model=config.MODEL_ID,
@@ -82,17 +107,7 @@ def _generate_draft(job: JobPosting, resume: dict, style_reference: str, client)
                 "cache_control": {"type": "ephemeral"},
             },
         ],
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    f"Write a cover letter for this job posting:\n"
-                    f"Title: {job.title}\n"
-                    f"Company: {job.company}\n"
-                    f"Description: {job.description}"
-                ),
-            }
-        ],
+        messages=[{"role": "user", "content": user_content}],
     )
     return "".join(block.text for block in message.content if getattr(block, "type", None) == "text")
 
@@ -134,16 +149,31 @@ def _fact_check(draft: str, resume: dict, client) -> tuple[str, list[str]]:
 
 
 def generate_cover_letter(
-    job: JobPosting, resume_variant: ResumeVariant, client=None
+    job: JobPosting,
+    resume_variant: ResumeVariant,
+    client=None,
+    revision_feedback: str | None = None,
+    previous_letter: str | None = None,
 ) -> tuple[str, list[str]]:
     """Return (final_cover_letter, fact_check_issues). fact_check_issues is
-    empty if the draft was approved as-is."""
+    empty if the draft was approved as-is.
+
+    Pass `revision_feedback` + `previous_letter` to revise an existing letter
+    per the user's feedback instead of writing a fresh draft.
+    """
     if client is None:
         client = get_client()
 
     resume = get_or_parse_resume(resume_variant)
     style_reference = _load_style_reference()
 
-    draft = _generate_draft(job, resume, style_reference, client)
+    draft = _generate_draft(
+        job,
+        resume,
+        style_reference,
+        client,
+        revision_feedback=revision_feedback,
+        previous_letter=previous_letter,
+    )
     final_letter, issues = _fact_check(draft, resume, client)
     return final_letter, issues

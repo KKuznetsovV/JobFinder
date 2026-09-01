@@ -51,6 +51,15 @@ def main() -> None:
             except Exception:
                 logger.exception("Approval-reply check failed for application %s", application.id)
 
+        for application in store.list_applications_by_status(
+            ApplicationStatus.REVISION_REQUESTED, db_path=config.DB_PATH
+        ):
+            job = store.get_job_posting(application.job_posting_id, db_path=config.DB_PATH)
+            try:
+                pipeline.process_revision_request(application, job, service, db_path=config.DB_PATH)
+            except Exception:
+                logger.exception("Revision handling failed for application %s", application.id)
+
         time.sleep(config.JOB_POLL_INTERVAL_HOURS * 3600)
 
 

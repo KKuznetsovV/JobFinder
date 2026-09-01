@@ -62,3 +62,36 @@ def process_new_posting(
 
     application = notify.send_approval_request(gmail_service, application, job, db_path=db_path)
     return application
+
+
+def process_revision_request(
+    application: Application, job: JobPosting, gmail_service, db_path: str | None = None, client=None
+) -> Application:
+    """Regenerate the cover letter incorporating the user's latest revision
+    feedback (from `application.apply_log`), then re-send the
+    approval-request email in the same Gmail thread. Sets the application's
+    status back to NOTIFIED so the next reply-check picks up the user's
+    response to the revision.
+    """
+    feedback = ""
+    for entry in reversed(application.apply_log):
+        if entry.get("event") == "revision_requested":
+            feedback = entry.get("detail", "")
+            break
+
+    final_cover_letter, fact_check_issues = cover_letter_module.generate_cover_letter(
+        job,
+        application.resume_variant,
+        client=client,
+        revision_feedback=feedback,
+        previous_letter=application.cover_letter,
+    )
+    application.cover_letter = final_cover_letter
+    store.append_apply_log(application, "revision_applied", feedback, db_path=db_path)
+    if fact_check_issues:
+        store.append_apply_log(
+            application, "fact_check_issues", "; ".join(fact_check_issues), db_path=db_path
+        )
+
+    application = notify.send_revision_request(gmail_service, application, job, db_path=db_path)
+    return application

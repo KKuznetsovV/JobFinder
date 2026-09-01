@@ -85,3 +85,29 @@ def test_generate_cover_letter_end_to_end(mocker):
 
     assert final_letter == "Final letter."
     assert issues == []
+
+
+def test_generate_draft_with_revision_feedback_asks_to_revise_previous_letter(mocker):
+    capture = {}
+
+    def fake_create_message(client, **kwargs):
+        capture["messages"] = kwargs["messages"]
+        return _text_message("Shorter revised letter.")
+
+    mocker.patch(
+        "jobfinder.ai.cover_letter.create_message_with_retry", side_effect=fake_create_message
+    )
+
+    draft = cover_letter._generate_draft(
+        _job(),
+        {"raw_text": "Experienced Python developer."},
+        "casual style",
+        client=object(),
+        revision_feedback="Make it shorter.",
+        previous_letter="Dear hiring team, long previous letter...",
+    )
+
+    assert draft == "Shorter revised letter."
+    user_content = capture["messages"][0]["content"]
+    assert "Make it shorter." in user_content
+    assert "Dear hiring team, long previous letter..." in user_content
