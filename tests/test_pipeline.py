@@ -81,3 +81,42 @@ def test_process_new_posting_creates_application_and_notifies(tmp_path, mocker):
     events = [entry["event"] for entry in reloaded.apply_log]
     assert "relevance_passed" in events
     assert "fact_check_issues" in events
+
+
+def test_process_revision_request_regenerates_and_resends(tmp_path, mocker):
+    from jobfinder.db.models import Application, ApplicationStatus
+
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+    application = Application(
+        job_posting_id=job.id,
+        resume_variant=ResumeVariant.FULLSTACK,
+        cover_letter="Long previous letter.",
+        status=ApplicationStatus.REVISION_REQUESTED,
+        gmail_thread_id="thread-1",
+        gmail_last_message_id="msg-notify",
+    )
+    application = store.insert_application(application, db_path)
+    store.append_apply_log(application, "revision_requested", "Make it shorter.", db_path=db_path)
+
+    cover_letter_spy = mocker.patch(
+        "jobfinder.pipeline.cover_letter_module.generate_cover_letter",
+        return_value=("Shorter letter.", []),
+    )
+    notify_spy = mocker.patch(
+        "jobfinder.pipeline.notify.send_revision_request",
+        side_effect=lambda service, app, job, db_path=None: app,
+    )
+
+    result = pipeline.process_revision_request(application, job, gmail_service=object(), db_path=db_path)
+
+    assert result.cover_letter == "Shorter letter."
+    cover_letter_spy.assert_called_once()
+    assert cover_letter_spy.call_args.kwargs["revision_feedback"] == "Make it shorter."
+    assert cover_letter_spy.call_args.kwargs["previous_letter"] == "Long previous letter."
+    notify_spy.assert_called_once()
+
+    reloaded = store.get_application(result.id, db_path=db_path)
+    events = [entry["event"] for entry in reloaded.apply_log]
+    assert "revision_applied" in events

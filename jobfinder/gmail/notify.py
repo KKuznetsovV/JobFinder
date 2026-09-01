@@ -62,3 +62,47 @@ def send_approval_request(
     store.update_application(application, db_path=db_path)
     store.append_apply_log(application, "notified", "Sent approval-request email.", db_path=db_path)
     return application
+
+
+def build_revision_email(application: Application, job: JobPosting) -> EmailMessage:
+    if application.id is None:
+        raise ValueError("Application must be inserted (have an id) before notifying")
+
+    message = EmailMessage()
+    message["To"] = config.GMAIL_USER_EMAIL
+    message["From"] = config.GMAIL_USER_EMAIL
+    message["Subject"] = f"Re: Approve application: {job.title} at {job.company}"
+    message[config.APP_ID_HEADER] = str(application.id)
+
+    submission_label = _APPLY_METHOD_LABELS.get(job.apply_method.value, job.apply_method.value)
+    body = (
+        f"Updated per your feedback.\n\n"
+        f"Job: {job.title} at {job.company}\n"
+        f"Link: {job.url}\n"
+        f"Submission method: {submission_label}\n"
+        f"Relevance score: {application.relevance_score}\n\n"
+        f"Resume chosen: {application.resume_variant.value}\n"
+        f"Reason: {application.resume_choice_reason}\n\n"
+        f"--- Revised cover letter ---\n{application.cover_letter}\n\n"
+        f"Reply APPROVE to send this application, REJECT to skip it, or describe "
+        f"what to change to request another revision."
+    )
+    message.set_content(body)
+    return message
+
+
+def send_revision_request(
+    service, application: Application, job: JobPosting, db_path: str | None = None
+) -> Application:
+    """Re-send the approval-request email in the same thread after the cover
+    letter was revised per the user's feedback. Returns the updated Application."""
+    message = build_revision_email(application, job)
+    response = send_raw_message(service, message.as_bytes(), thread_id=application.gmail_thread_id)
+
+    application.gmail_last_message_id = response["id"]
+    application.status = ApplicationStatus.NOTIFIED
+    store.update_application(application, db_path=db_path)
+    store.append_apply_log(
+        application, "notified", "Sent revised approval-request email.", db_path=db_path
+    )
+    return application
