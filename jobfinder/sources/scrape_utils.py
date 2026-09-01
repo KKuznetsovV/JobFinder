@@ -22,13 +22,29 @@ _robots_cache: dict[str, urllib.robotparser.RobotFileParser | None] = {}
 
 
 def _robots_parser(url: str) -> urllib.robotparser.RobotFileParser | None:
+    # Fetch robots.txt ourselves with our identifying User-Agent instead of
+    # urllib.robotparser's default read() (which uses a generic
+    # "Python-urllib/x.y" UA): some sites 403 that generic UA on the robots.txt
+    # request itself, which stdlib then misreads as "disallow everything" even
+    # though the real robots.txt permits fetching.
     parsed = urlparse(url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
     if origin not in _robots_cache:
         parser = urllib.robotparser.RobotFileParser()
-        parser.set_url(f"{origin}/robots.txt")
+        robots_url = f"{origin}/robots.txt"
+        parser.set_url(robots_url)
         try:
-            parser.read()
+            response = requests.get(
+                robots_url, headers={"User-Agent": config.USER_AGENT}, timeout=15.0
+            )
+            if response.status_code in (401, 403):
+                parser.disallow_all = True
+            elif 400 <= response.status_code < 500:
+                parser.allow_all = True
+            elif response.status_code >= 500:
+                parser = None  # robots.txt server error: fail open, don't fetch
+            else:
+                parser.parse(response.text.splitlines())
         except Exception:
             parser = None  # robots.txt itself unreachable
         _robots_cache[origin] = parser
