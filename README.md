@@ -1,1 +1,187 @@
 # JobFinder
+
+An AI job-application assistant made of two cooperating components:
+
+- **The cloud "brain"** (`scripts/run_brain.py`): polls job sources, filters
+  for relevance with Claude, picks the best-fitting resume, drafts and
+  fact-checks a cover letter, and emails you an approval request. It then
+  watches that email thread for your reply (approve / reject / revise).
+- **The local "hands"** (`scripts/run_local_agent.py`): runs on your own
+  machine with your real, logged-in Chrome. Once you approve an application
+  by email, it submits it automatically on the company's ATS site, or - for
+  LinkedIn Easy Apply - fills the whole form and pauses one step before the
+  final submit so you can review and click it yourself.
+
+Both components share one local SQLite datastore (`data/jobfinder.db`).
+
+```mermaid
+flowchart LR
+    subgraph Cloud brain
+        A[Job sources] --> B[Relevance filter]
+        B --> C[Resume selector]
+        C --> D[Cover letter + fact-check]
+        D --> E[Gmail approval request]
+        E --> F[Gmail reply classifier]
+    end
+    F -->|approved| G[(Shared SQLite DB)]
+    subgraph Local hands
+        G --> H[Apply agent]
+        H --> I[ATS adapters]
+        H --> J[Accessibility-tree fallback]
+        H --> K[LinkedIn Easy Apply - fill & pause]
+    end
+```
+
+## Setup
+
+1. **Python env**
+   ```bash
+   python -m venv .venv
+   source .venv/Scripts/activate   # Windows Git Bash; use .venv\Scripts\activate.bat on cmd
+   pip install -r requirements.txt
+   playwright install chrome
+   ```
+
+2. **Environment variables**: copy `.env.example` to `.env` and fill in:
+   - `ANTHROPIC_API_KEY` - from [platform.claude.com](https://platform.claude.com).
+   - `GMAIL_CLIENT_SECRET_FILE` / `GMAIL_TOKEN_FILE` - see "Gmail setup" below.
+   - `GMAIL_USER_EMAIL` - the address approval-request emails are sent to/from.
+   - `APPLICANT_NAME` - used to sign cover letters and fill application forms.
+   - `JOBFINDER_DB_PATH` - defaults to `data/jobfinder.db`.
+   - `CHROME_USER_DATA_DIR` - defaults to `chrome-profile/`.
+   - `DAILY_APPLICATION_CAP` - max automatic submissions per day (default 15).
+
+3. **Gmail setup** (least-privilege: `gmail.readonly` + `gmail.send`, never
+   `gmail.modify`):
+   - Create a Google Cloud project, enable the Gmail API.
+   - Create an OAuth 2.0 Desktop client, download its JSON as
+     `credentials/gmail_client_secret.json`.
+   - The first time either script runs, it opens a browser for you to
+     authorize; the resulting token is cached at
+     `credentials/gmail_token.json` and refreshed automatically afterward.
+
+4. **Resumes**: add your real `.docx` files at `resumes/fullstack.docx` and
+   `resumes/project_manager.docx`. Nothing is fabricated here - if a file is
+   missing you'll get a clear `FileNotFoundError` pointing at the expected path.
+
+5. **LinkedIn job alerts**: this project never scrapes linkedin.com directly.
+   Instead, set up a job-alert search on linkedin.com (Jobs -> Search ->
+   "Create job alert") with email notifications turned on, sent to the same
+   inbox `GMAIL_USER_EMAIL` points at. JobFinder reads those digest emails.
+
+6. **Seed your Chrome profile** (once, before running the local agent):
+   ```bash
+   python scripts/seed_chrome_profile.py
+   ```
+   This opens a real Chrome window using a persistent profile at
+   `CHROME_USER_DATA_DIR`; log into LinkedIn (and any ATS accounts you use)
+   by hand, then press Enter in the terminal. No password is ever stored or
+   typed by this project - only your real, cookie-based Chrome session is
+   reused afterward.
+
+## Running
+
+```bash
+python scripts/run_brain.py         # cloud brain: polling + notify + approval loop
+python scripts/run_local_agent.py   # local hands: submits approved applications
+```
+
+Run them as two long-lived processes (e.g. two terminals, or two systemd/
+Task Scheduler services). The brain can run anywhere; the local agent must
+run on the machine with the seeded Chrome profile.
+
+## Testing
+
+```bash
+pytest -q
+```
+
+104 tests as of this writing, covering resume parsing, Gmail OAuth/client,
+job sources, scraping utilities, the Claude-backed relevance/resume/cover-
+letter/approval-reply modules, the local apply agent, ATS adapters, and both
+browser-automation tool loops.
+
+## Project structure
+
+```
+jobfinder/
+  config.py              # central config: model id, paths, thresholds, secrets
+  db/                     # SQLite schema, models, and access layer
+  resume/                 # .docx parsing + mtime-cached parsed JSON
+  gmail/                  # OAuth, thin API client, approval-request email,
+                           # reply classification/approval loop
+  sources/                # JobSource interface, scheduler, and per-site sources
+                           # (gotfriends, devjobs, linkedin_email, jobinfo stub)
+  ai/                      # shared Anthropic client + relevance filter,
+                           # resume selector, cover letter generator
+  local/                   # the "hands": apply agent, browser session,
+                           # ATS adapters, accessibility-tree tool loops
+  pipeline.py              # wires relevance -> resume -> cover letter -> notify
+  tracking.py              # status/log lifecycle queries
+scripts/
+  seed_chrome_profile.py   # one-time manual Chrome login
+  run_brain.py             # cloud brain entrypoint
+  run_local_agent.py       # local hands entrypoint
+```
+
+## Assumptions and deviations (read this)
+
+This project was built to an extremely detailed spec with the instruction
+to ask if something was ambiguous, otherwise use best judgment and note the
+assumption. Here's everything worth knowing before you rely on it:
+
+- **Custom browser-automation tools instead of Anthropic's built-in
+  computer-use/browser-use toolsets.** Anthropic offers screenshot+pixel-
+  coordinate driven tools for this; per an explicit preference, this project
+  instead uses custom accessibility-tree tools (`list_elements`,
+  `click_by_ref`, `fill_by_ref`, `upload_by_ref`, with `take_screenshot` only
+  as a last resort). See `jobfinder/local/browser_apply_fallback.py` and
+  `jobfinder/local/browser_apply_linkedin.py`.
+- **LinkedIn is never scraped directly.** Job discovery from LinkedIn comes
+  only from the user's own job-alert digest emails
+  (`jobfinder/sources/linkedin_email.py`). The exact HTML markup of those
+  digest emails was assumed (no real sample was available while building
+  this) - if LinkedIn's email template drifts, `_parse_job_cards` in that
+  file is the place to adjust extraction; nothing else depends on the markup
+  details.
+- **JobInfo (jobinfo.co.il) is intentionally unimplemented.** It serves a
+  Cloudflare "Just a moment..." JS challenge to automated requests (verified
+  with a real browser, not just a bare HTTP request). Building something to
+  solve that challenge would mean bypassing an active anti-bot security
+  control, which this project doesn't do. `jobfinder/sources/jobinfo.py`
+  always returns an empty list and logs a warning explaining why.
+- **GotFriends and DevJobs scrapers are grounded in real, verified page
+  structure** (captured live while building this), not guessed CSS
+  selectors - but external sites can still change their markup at any time;
+  if scraping silently stops returning results, check
+  `jobfinder/sources/gotfriends.py` / `devjobs.py` first.
+- **Workday's ATS adapter is intentionally partial.** Workday's real apply
+  flow is a multi-step SPA wizard that varies per employer; the adapter
+  fills the initial identity fields and then always raises so the
+  application is marked `stuck` for the accessibility-tree fallback or
+  manual completion, rather than risking a wrong or incomplete
+  auto-submission.
+- **The 5 other ATS adapters (Greenhouse, Lever, Comeet, SmartRecruiters,
+  JazzHR) use each platform's well-documented default field
+  names/ids.** Companies can customize forms beyond this; a required field
+  or submit button not being found raises `ATSFormError` rather than
+  submitting a partially-filled form, and the local agent falls back to the
+  accessibility-tree loop in that case.
+- **LinkedIn Easy Apply is never auto-submitted.** The tool loop fills the
+  entire form but has a hard-coded, code-level refusal (not just a prompt
+  instruction) to click anything whose text matches "submit application" -
+  it always stops one step early for you to review and click.
+- **Resume-parsing heuristics** (Word heading styles, ALL-CAPS short lines,
+  bold short paragraphs, bullet-prefix stripping) are conservative guesses
+  about typical resume structure, not a fixed schema - see
+  `jobfinder/resume/parser.py` if your resume's structure trips them up.
+- **The style reference** (`config/style_reference.txt`) is used only for
+  tone guidance in cover letters, never as a source of factual content.
+- **No phone number is collected anywhere** in config/env - ATS/LinkedIn
+  form-filling only ever supplies name, email, resume file, and cover
+  letter; phone fields are left blank if present on a form.
+- **`ApplyMethod.EMAIL` has no registered handler yet** - no current job
+  source produces email-apply postings, so this is untested in practice; an
+  application with this apply method would be marked `stuck` by the local
+  agent (`NotImplementedError`, caught and logged) rather than silently
+  failing.
