@@ -177,9 +177,10 @@ assumption. Here's everything worth knowing before you rely on it:
   `jobfinder/resume/parser.py` if your resume's structure trips them up.
 - **The style reference** (`config/style_reference.txt`) is used only for
   tone guidance in cover letters, never as a source of factual content.
-- **No phone number is collected anywhere** in config/env - ATS/LinkedIn
-  form-filling only ever supplies name, email, resume file, and cover
-  letter; phone fields are left blank if present on a form.
+- **Phone number is optional** (`APPLICANT_PHONE` in `.env`) - if set, it's
+  supplied to ATS/LinkedIn form-filling like name/email/resume/cover letter;
+  if left blank, the local agent stops and marks the application `stuck`
+  rather than inventing a number or leaving a required field empty.
 - **`ApplyMethod.EMAIL` has no registered handler yet** - no current job
   source produces email-apply postings, so this is untested in practice; an
   application with this apply method would be marked `stuck` by the local

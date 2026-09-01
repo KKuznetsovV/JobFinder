@@ -102,6 +102,7 @@ def _build_system_prompt(application: Application, job: JobPosting) -> list[dict
                 "status='stuck'.\n\n"
                 f"Applicant name: {config.APPLICANT_NAME}\n"
                 f"Applicant email: {config.GMAIL_USER_EMAIL}\n"
+                f"Applicant phone: {config.APPLICANT_PHONE or 'not provided - call finish with status=stuck if a phone field is required'}\n"
                 f"Resume file path (for upload_by_ref): {resume_file}\n"
                 f"Job: {job.title} at {job.company}\nJob URL: {job.url}\n\n"
                 f"Cover letter text to use if the form has a cover-letter/message field:\n"
