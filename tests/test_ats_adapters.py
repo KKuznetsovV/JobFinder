@@ -92,6 +92,26 @@ def test_greenhouse_raises_when_email_missing():
         GreenhouseAdapter().fill_and_submit(page, _application(), _job())
 
 
+def test_greenhouse_fills_phone_when_configured(mocker):
+    mocker.patch("jobfinder.local.ats.greenhouse.resume_file_for", return_value="resume.docx")
+    mocker.patch.object(config, "GMAIL_USER_EMAIL", "me@example.com")
+    mocker.patch.object(config, "APPLICANT_PHONE", "0525655985")
+    locators = {
+        "#first_name": FakeLocator(),
+        "#last_name": FakeLocator(),
+        "#email": FakeLocator(),
+        "#phone": FakeLocator(),
+        "input#resume[type='file']": FakeLocator(),
+        "#cover_letter": FakeLocator(),
+        "#submit_app": FakeLocator(),
+    }
+    page = FakePage(locators)
+
+    GreenhouseAdapter().fill_and_submit(page, _application(), _job())
+
+    assert locators["#phone"].fill_calls == ["0525655985"]
+
+
 def test_lever_fills_and_submits(mocker):
     mocker.patch("jobfinder.local.ats.lever.resume_file_for", return_value="resume.docx")
     mocker.patch.object(config, "GMAIL_USER_EMAIL", "me@example.com")

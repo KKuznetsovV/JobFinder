@@ -30,6 +30,7 @@ CHROME_USER_DATA_DIR = Path(os.environ.get("CHROME_USER_DATA_DIR", "chrome-profi
 
 # --- Identity --------------------------------------------------------------
 APPLICANT_NAME = os.environ.get("APPLICANT_NAME", "Kirill Kuznetsov")
+APPLICANT_PHONE = os.environ.get("APPLICANT_PHONE", "")
 
 # --- Anthropic -------------------------------------------------------------
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")

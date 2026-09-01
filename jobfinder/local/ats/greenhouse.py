@@ -23,6 +23,7 @@ class GreenhouseAdapter(ATSAdapter):
         fill_if_present(page, "#first_name", first)
         fill_if_present(page, "#last_name", last)
         require(page, "#email", "email").fill(config.GMAIL_USER_EMAIL)
+        fill_if_present(page, "#phone", config.APPLICANT_PHONE)
         require(page, "input#resume[type='file']", "resume upload").set_input_files(
             resume_file_for(application)
         )
