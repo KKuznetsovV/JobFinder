@@ -51,9 +51,15 @@ GMAIL_SCOPES = [
 
 # --- Scheduling / thresholds / pacing ---------------------------------------
 JOB_POLL_INTERVAL_HOURS = 3
-RELEVANCE_THRESHOLD = 0.35  # 0-1 score from the relevance-filter Claude call
+RELEVANCE_THRESHOLD = 0.42  # 0-1 score from the relevance-filter Claude call
 MAX_REVISION_ROUNDS = 3
 DAILY_APPLICATION_CAP = int(os.environ.get("DAILY_APPLICATION_CAP", "25"))
+
+# Local (no-API-call) embedding pre-filter that runs before the Claude relevance
+# call. 0-1 cosine similarity against the candidate's resumes; postings below
+# this score never reach the relevance/resume-selection/cover-letter LLM calls.
+TIER0_MIN_SIMILARITY = float(os.environ.get("TIER0_MIN_SIMILARITY", "0.35"))
+TIER0_MODEL_NAME = os.environ.get("TIER0_MODEL_NAME", "all-MiniLM-L6-v2")
 SCRAPE_MIN_DELAY_SECONDS = 3
 SCRAPE_MAX_DELAY_SECONDS = 8
 USER_AGENT = "JobFinderBot/0.1 (+personal job-search assistant; single user, low volume)"

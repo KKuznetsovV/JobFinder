@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS applications (
     resume_choice_reason  TEXT,
     cover_letter          TEXT,
     status                TEXT NOT NULL DEFAULT 'found' CHECK (status IN (
-                              'found', 'notified', 'approved', 'rejected',
+                              'found', 'notified', 'approved', 'rejected', 'rejected_tier0',
                               'revision_requested', 'submitting', 'awaiting_my_click',
                               'sent', 'stuck', 'failed'
                           )),
@@ -33,7 +33,9 @@ CREATE TABLE IF NOT EXISTS applications (
     revision_count        INTEGER NOT NULL DEFAULT 0,
     apply_log             TEXT NOT NULL DEFAULT '[]',  -- JSON array of {ts, event, detail}
     created_at            TEXT NOT NULL,
-    updated_at            TEXT NOT NULL
+    updated_at            TEXT NOT NULL,
+    tier0_score           REAL,     -- local embedding-similarity score (0-1), pre-Claude
+    tier0_resume_hint     TEXT CHECK (tier0_resume_hint IN ('fullstack', 'project_manager') OR tier0_resume_hint IS NULL)
 );
 
 CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);

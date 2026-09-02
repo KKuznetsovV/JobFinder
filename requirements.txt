@@ -10,6 +10,7 @@ feedparser>=6.0
 beautifulsoup4>=4.12
 requests>=2.32
 lxml>=5.3
+sentence-transformers>=3.0
 
 # dev / test
 pytest>=8.3
