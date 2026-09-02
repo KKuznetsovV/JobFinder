@@ -51,7 +51,7 @@ GMAIL_SCOPES = [
 
 # --- Scheduling / thresholds / pacing ---------------------------------------
 JOB_POLL_INTERVAL_HOURS = 3
-RELEVANCE_THRESHOLD = 0.45  # 0-1 score from the relevance-filter Claude call
+RELEVANCE_THRESHOLD = 0.35  # 0-1 score from the relevance-filter Claude call
 MAX_REVISION_ROUNDS = 3
 DAILY_APPLICATION_CAP = int(os.environ.get("DAILY_APPLICATION_CAP", "15"))
 SCRAPE_MIN_DELAY_SECONDS = 3
