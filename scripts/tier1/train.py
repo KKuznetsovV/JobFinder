@@ -18,16 +18,44 @@ Run:
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from pathlib import Path
 
 import yaml
-from datasets import load_dataset
-
-from jobfinder.ai.tier1_schema import PROMPT_TEMPLATE  # noqa: E402 (see sys.path note below)
-import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from jobfinder.ai.tier1_schema import PROMPT_TEMPLATE  # noqa: E402
+
+
+def _patch_dill_for_python314() -> None:
+    """Python 3.14's stdlib pickle.Pickler.save_dict now calls
+    self._batch_setitems(items, obj) (an extra `obj` arg, used only for
+    error messages), but datasets.utils._dill.Pickler._batch_setitems still
+    overrides the old 2-arg signature - breaking every datasets.load_dataset
+    call with a TypeError. Remove this once `datasets` ships a fix upstream."""
+    import dill
+    from datasets.utils import _dill as datasets_dill
+
+    if sys.version_info < (3, 14):
+        return
+
+    def _batch_setitems(self, items, obj=None):
+        if self._legacy_no_dict_keys_sorting:
+            return dill.Pickler._batch_setitems(self, items, obj)
+        try:
+            items = sorted(items)
+        except Exception:
+            from datasets.fingerprint import Hasher
+
+            items = sorted(items, key=lambda x: Hasher.hash(x[0]))
+        dill.Pickler._batch_setitems(self, items, obj)
+
+    datasets_dill.Pickler._batch_setitems = _batch_setitems
+
+
+_patch_dill_for_python314()
+
+from datasets import load_dataset  # noqa: E402
 
 
 def _format_example(example: dict) -> dict:

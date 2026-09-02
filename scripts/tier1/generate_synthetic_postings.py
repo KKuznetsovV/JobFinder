@@ -42,10 +42,32 @@ TECH_SNIPPETS = [
     "GraphQL APIs and TypeScript", "distributed systems at scale",
 ]
 
+# Closer keyword overlap with the actual fullstack resume on file (React,
+# Node/Express, TypeScript, MongoDB/PostgreSQL, Docker, CI/CD, microservices)
+# - used by --strong-match to generate a batch skewed toward the relevant
+# class, since the default TECH_SNIPPETS bucket under-produces true
+# positives (most real postings aren't a fit either, but a training set
+# needs enough positive examples to learn from).
+STRONG_MATCH_TECH_SNIPPETS = [
+    "React, TypeScript, and Redux on the frontend", "Node.js and Express REST APIs",
+    "MongoDB and PostgreSQL data layers", "Docker containers and CI/CD via GitHub Actions",
+    "a microservices architecture", "JWT-based auth and SPA architecture",
+]
+
 PM_SNIPPETS = [
     "leading cross-functional agile teams", "managing product roadmaps and stakeholder alignment",
     "running sprint planning and retrospectives", "coordinating release schedules across teams",
     "gathering requirements from customers and translating them into specs",
+]
+
+# Closer overlap with the actual project_manager resume on file (operations/
+# venue/GM management: budgets, staff leadership, training programs) rather
+# than classic software-team scrum/product management.
+STRONG_MATCH_PM_SNIPPETS = [
+    "full operational management of a venue or business unit, including budgets and cost analysis",
+    "leading and training frontline staff",
+    "day-to-day management of a hospitality or retail location",
+    "hitting financial and operational targets for a location or division",
 ]
 
 UNRELATED_SNIPPETS = [
@@ -56,18 +78,20 @@ UNRELATED_SNIPPETS = [
 ]
 
 
-def _fullstack_description(rng: random.Random) -> str:
+def _fullstack_description(rng: random.Random, strong_match: bool = False) -> str:
+    pool = STRONG_MATCH_TECH_SNIPPETS if strong_match else TECH_SNIPPETS
     return (
         f"We're looking for an engineer to build and maintain services using "
-        f"{rng.choice(TECH_SNIPPETS)}. You'll work closely with the team on "
-        f"{rng.choice(TECH_SNIPPETS)} and help scale our platform."
+        f"{rng.choice(pool)}. You'll work closely with the team on "
+        f"{rng.choice(pool)} and help scale our platform."
     )
 
 
-def _pm_description(rng: random.Random) -> str:
+def _pm_description(rng: random.Random, strong_match: bool = False) -> str:
+    pool = STRONG_MATCH_PM_SNIPPETS if strong_match else PM_SNIPPETS
     return (
-        f"We're looking for someone experienced in {rng.choice(PM_SNIPPETS)}. "
-        f"You'll partner with engineering and design on {rng.choice(PM_SNIPPETS)}."
+        f"We're looking for someone experienced in {rng.choice(pool)}. "
+        f"You'll partner with engineering and design on {rng.choice(pool)}."
     )
 
 
@@ -78,17 +102,22 @@ def _unrelated_description(rng: random.Random) -> str:
     )
 
 
-def generate_posting(rng: random.Random, index: int) -> dict:
+def generate_posting(rng: random.Random, index: int, strong_match_fraction: float = 0.0) -> dict:
     """Roughly a third each of: fullstack-flavored, PM-flavored, and clearly
     unrelated postings - gives the teacher-labeling step (and eventually the
-    fine-tuned model) a balanced mix of both positive classes plus negatives."""
+    fine-tuned model) a mix of both positive classes plus negatives.
+    `strong_match_fraction` biases the fullstack/PM buckets toward the
+    STRONG_MATCH_* snippet pools (closer resume keyword overlap), for
+    generating a supplemental batch when the default mix under-produces
+    the relevant class."""
     bucket = rng.choice(["fullstack", "project_manager", "unrelated"])
+    strong_match = rng.random() < strong_match_fraction
     if bucket == "fullstack":
         title = rng.choice(TITLES[:5])
-        description = _fullstack_description(rng)
+        description = _fullstack_description(rng, strong_match=strong_match)
     elif bucket == "project_manager":
         title = rng.choice(TITLES[5:9])
-        description = _pm_description(rng)
+        description = _pm_description(rng, strong_match=strong_match)
     else:
         title = rng.choice(TITLES[9:])
         description = _unrelated_description(rng)
@@ -106,13 +135,17 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("scripts/tier1/data/synthetic_postings.jsonl"))
     parser.add_argument("--count", type=int, default=500)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--strong-match-fraction", type=float, default=0.0,
+        help="Fraction of fullstack/PM postings biased toward closer resume-keyword overlap.",
+    )
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as f:
         for i in range(args.count):
-            f.write(json.dumps(generate_posting(rng, i), ensure_ascii=False) + "\n")
+            f.write(json.dumps(generate_posting(rng, i, args.strong_match_fraction), ensure_ascii=False) + "\n")
 
     print(f"Wrote {args.count} synthetic postings to {args.out}", file=sys.stderr)
 

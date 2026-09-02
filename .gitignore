@@ -27,6 +27,13 @@ chrome-profile/
 resumes/*.docx
 !resumes/.gitkeep
 
+# Tier-1 classifier training artifacts: generated data, model checkpoints,
+# merged weights, and GGUF exports are all large/reproducible - never commit.
+models/
+scripts/tier1/data/
+scripts/tier1/output/
+unsloth_compiled_cache/
+
 # Logs
 *.log
 logs/

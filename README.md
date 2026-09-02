@@ -203,6 +203,28 @@ Running the full pipeline requires installing
 GPU strongly recommended) and will make real, paid Claude API calls during
 `label_examples.py`. See each script's module docstring for exact usage.
 
+**First fine-tuning round (completed, model not committed to git - see
+`models/` in `.gitignore`)**: 655 labeled examples (400 synthetic + 250
+resume-keyword-biased synthetic, labeled via real `relevance.is_relevant`/
+`resume_selector.select_resume` calls), split 502/55/98 train/val/eval,
+3 epochs LoRA fine-tuning of `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit` on an
+RTX 5060 Laptop GPU (~9 min), quantized to q4_k_m (~940MB). Held-out eval
+results: **77.6% relevance accuracy, 66.7% resume-variant accuracy (among
+relevant examples), 77.6% combined accuracy** on the 98-example eval set.
+
+Known limitation: the model's reported confidence values are not currently
+well-calibrated - training labels used fixed placeholder confidences (0.9-0.95
+for relevance, 0.5-0.9 for resume) rather than genuine per-example certainty,
+so the model has learned to reproduce those same near-constant values instead
+of a real uncertainty signal. This means `TIER1_CONFIDENCE_MIN` does not yet
+reliably gate low-quality predictions to Claude. **Recommendation: keep
+`TIER1_MODEL_ENABLED=false` until a future training round derives genuine
+calibrated confidence** (e.g. via sampling-based agreement or by asking the
+Claude teacher to report its own certainty during labeling) - the
+infrastructure (routing, spot-check logging, training-data accumulation) is
+in place and tested, but the shipped model is a first-pass proof of concept,
+not yet accurate/calibrated enough for unattended production use.
+
 ## Project structure
 
 ```

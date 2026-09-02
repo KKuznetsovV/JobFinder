@@ -20,19 +20,48 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from jobfinder import config  # noqa: E402
+from jobfinder.ai import resume_selector  # noqa: E402
 from jobfinder.ai.tier1_schema import INSTRUCTION, build_input_text  # noqa: E402
 from jobfinder.db import store  # noqa: E402
+from jobfinder.db.models import ApplyMethod, JobPosting  # noqa: E402
+
+
+def _best_guess_resume_variant(example) -> tuple[str, str]:
+    """For not-relevant examples (no resume_variant was computed in
+    production, since resume selection is skipped to save Claude calls), use
+    the free local keyword heuristic to produce a genuine best-guess label
+    instead of a fixed placeholder - matching the "give your best guess even
+    if not relevant" instruction in tier1_schema.INSTRUCTION."""
+    job = JobPosting(
+        source="synthetic", external_id="", title=example.title, company=example.company,
+        description=example.description, url="", apply_method=ApplyMethod.COMPANY_SITE,
+    )
+    matched = resume_selector.heuristic_select(job)
+    variant = matched or resume_selector.ResumeVariant.FULLSTACK
+    reason = (
+        "Keyword heuristic best guess (posting was not relevant, so no resume was actually chosen)."
+        if matched
+        else "No keyword match; defaulting to fullstack as a best guess."
+    )
+    return variant.value, reason
 
 
 def _example_to_record(example) -> dict:
+    if example.resume_variant:
+        resume_variant, resume_reason = example.resume_variant.value, example.resume_reason
+        resume_confidence = 0.9
+    else:
+        resume_variant, resume_reason = _best_guess_resume_variant(example)
+        resume_confidence = 0.5  # genuinely low confidence: no resume decision was ever made for this posting
+
     output = json.dumps(
         {
             "relevant": example.relevant,
             "relevance_confidence": 0.95 if example.relevant else 0.9,
             "relevance_reason": example.relevance_reason,
-            "resume_variant": (example.resume_variant.value if example.resume_variant else "fullstack"),
-            "resume_confidence": 0.9,
-            "resume_reason": example.resume_reason or "Not relevant, no resume chosen.",
+            "resume_variant": resume_variant,
+            "resume_confidence": resume_confidence,
+            "resume_reason": resume_reason,
         },
         ensure_ascii=False,
     )
