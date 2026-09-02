@@ -1,3 +1,7 @@
+import math
+
+import pytest
+
 from jobfinder import config
 from jobfinder.ai import tier1_classifier
 from jobfinder.ai.tier1_classifier import Tier1Decision
@@ -209,20 +213,40 @@ def test_decide_logs_training_example_with_no_resume_when_not_relevant(tmp_path,
 
 class _FakeLlm:
     """Stand-in for llama_cpp.Llama: callable, returns the OpenAI-completion-
-    style dict shape llama-cpp-python produces."""
+    style dict shape llama-cpp-python produces (with `logprobs=1` requested).
 
-    def __init__(self, text):
+    Treats each character of `text` as its own token, all at a high-confidence
+    logprob (-0.01) by default. `low_confidence_substrings` maps a literal
+    substring of `text` (e.g. the value of one JSON field) to the logprob its
+    characters should carry instead - used to simulate the model being
+    genuinely uncertain about just that field. `include_logprobs=False`
+    simulates a caller that didn't request logprobs at all."""
+
+    def __init__(self, text, low_confidence_substrings=None, include_logprobs=True):
         self._text = text
+        self._low_confidence_substrings = low_confidence_substrings or {}
+        self._include_logprobs = include_logprobs
 
     def __call__(self, prompt, **kwargs):
-        return {"choices": [{"text": self._text}]}
+        choice = {"text": self._text}
+        if self._include_logprobs:
+            token_logprobs = [-0.01] * len(self._text)
+            for substring, logprob in self._low_confidence_substrings.items():
+                start = self._text.index(substring)
+                for i in range(start, start + len(substring)):
+                    token_logprobs[i] = logprob
+            prompt_len = len(prompt)
+            choice["logprobs"] = {
+                "text_offset": [prompt_len + i for i in range(len(self._text))],
+                "token_logprobs": token_logprobs,
+            }
+        return {"choices": [choice]}
 
 
 def test_classify_parses_well_formed_json():
     text = (
-        '{"relevant": true, "relevance_confidence": 0.93, '
-        '"relevance_reason": "Good match.", "resume_variant": "fullstack", '
-        '"resume_confidence": 0.88, "resume_reason": "Backend focus."}'
+        '{"relevant": true, "relevance_reason": "Good match.", '
+        '"resume_variant": "fullstack", "resume_reason": "Backend focus."}'
     )
     job = JobPosting(
         source="gotfriends",
@@ -238,17 +262,13 @@ def test_classify_parses_well_formed_json():
 
     assert decision is not None
     assert decision.relevant is True
-    assert decision.relevance_confidence == 0.93
     assert decision.resume_variant == ResumeVariant.FULLSTACK
-    assert decision.is_confident(threshold=0.85) is True
-    assert decision.is_confident(threshold=0.95) is False
 
 
 def test_classify_tolerates_markdown_fences():
     text = (
-        '```json\n{"relevant": false, "relevance_confidence": 0.6, '
-        '"relevance_reason": "Weak.", "resume_variant": "project_manager", '
-        '"resume_confidence": 0.6, "resume_reason": "Some PM keywords."}\n```'
+        '```json\n{"relevant": false, "relevance_reason": "Weak.", '
+        '"resume_variant": "project_manager", "resume_reason": "Some PM keywords."}\n```'
     )
     job = JobPosting(
         source="gotfriends",
@@ -284,7 +304,7 @@ def test_classify_returns_none_on_garbage_output():
 
 
 def test_classify_returns_none_on_missing_required_field():
-    text = '{"relevant": true, "relevance_confidence": 0.9}'  # missing resume fields
+    text = '{"relevant": true, "relevance_reason": "ok"}'  # missing resume fields
     job = JobPosting(
         source="gotfriends",
         external_id="1",
@@ -298,3 +318,188 @@ def test_classify_returns_none_on_missing_required_field():
     decision = tier1_classifier.classify(job, llm=_FakeLlm(text))
 
     assert decision is None
+
+
+def test_classify_derives_confidence_from_token_logprobs():
+    """Confidence is a real signal computed from the model's own output
+    token probabilities (see jobfinder.ai.tier1_classifier._field_confidence),
+    not a value the model was trained to emit - this is the fix for round 1's
+    near-constant placeholder confidence."""
+    text = (
+        '{"relevant": true, "relevance_reason": "Good match.", '
+        '"resume_variant": "fullstack", "resume_reason": "Backend focus."}'
+    )
+    job = JobPosting(
+        source="gotfriends",
+        external_id="1",
+        title="Backend Engineer",
+        company="Acme",
+        description="Python, FastAPI.",
+        url="https://example.com/1",
+        apply_method=ApplyMethod.COMPANY_SITE,
+    )
+
+    decision = tier1_classifier.classify(job, llm=_FakeLlm(text))
+
+    assert decision is not None
+    expected_high_confidence = math.exp(-0.01)
+    assert decision.relevance_confidence == pytest.approx(expected_high_confidence, rel=1e-3)
+    assert decision.resume_confidence == pytest.approx(expected_high_confidence, rel=1e-3)
+    assert decision.is_confident(threshold=0.95) is True
+
+
+def test_classify_low_token_confidence_on_relevant_value_lowers_only_that_confidence():
+    text = (
+        '{"relevant": true, "relevance_reason": "Good match.", '
+        '"resume_variant": "fullstack", "resume_reason": "Backend focus."}'
+    )
+    job = JobPosting(
+        source="gotfriends",
+        external_id="1",
+        title="Backend Engineer",
+        company="Acme",
+        description="Python, FastAPI.",
+        url="https://example.com/1",
+        apply_method=ApplyMethod.COMPANY_SITE,
+    )
+
+    decision = tier1_classifier.classify(
+        job, llm=_FakeLlm(text, low_confidence_substrings={"true": -3.0})
+    )
+
+    assert decision is not None
+    assert decision.relevance_confidence == pytest.approx(math.exp(-3.0), rel=1e-3)
+    assert decision.resume_confidence == pytest.approx(math.exp(-0.01), rel=1e-3)
+    assert decision.is_confident(threshold=0.85) is False
+
+
+def test_classify_confidence_is_zero_when_logprobs_unavailable():
+    text = (
+        '{"relevant": true, "relevance_reason": "Good match.", '
+        '"resume_variant": "fullstack", "resume_reason": "Backend focus."}'
+    )
+    job = JobPosting(
+        source="gotfriends",
+        external_id="1",
+        title="Backend Engineer",
+        company="Acme",
+        description="Python, FastAPI.",
+        url="https://example.com/1",
+        apply_method=ApplyMethod.COMPANY_SITE,
+    )
+
+    decision = tier1_classifier.classify(job, llm=_FakeLlm(text, include_logprobs=False))
+
+    assert decision is not None
+    assert decision.relevance_confidence == 0.0
+    assert decision.resume_confidence == 0.0
+    assert decision.is_confident() is False
+
+
+def test_classify_tolerates_out_of_schema_resume_variant_when_not_relevant():
+    text = (
+        '{"relevant": false, "relevance_reason": "No overlap at all.", '
+        '"resume_variant": "none", "resume_reason": ""}'
+    )
+    job = JobPosting(
+        source="gotfriends",
+        external_id="1",
+        title="Warehouse Associate",
+        company="Acme",
+        description="Forklift operation.",
+        url="https://example.com/1",
+        apply_method=ApplyMethod.COMPANY_SITE,
+    )
+
+    decision = tier1_classifier.classify(job, llm=_FakeLlm(text))
+
+    assert decision is not None
+    assert decision.relevant is False
+    assert decision.resume_variant == ResumeVariant.FULLSTACK
+    assert decision.resume_confidence == 0.0
+
+
+def test_is_confident_ignores_resume_confidence_when_not_relevant():
+    """resume_variant is never acted on downstream for a rejected posting,
+    so a low/noisy resume_confidence shouldn't force an otherwise-confident
+    "not relevant" decision to fall back to Claude - this was the cause of
+    round 2's non-monotonic confidence-calibration table (many correct
+    true-negative predictions had a near-zero resume_confidence and got
+    lumped into the lowest-confidence bucket despite being reliable)."""
+    decision = Tier1Decision(
+        relevant=False,
+        relevance_confidence=0.95,
+        relevance_reason="No overlap.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.0,
+        resume_reason="",
+    )
+
+    assert decision.is_confident(threshold=0.85) is True
+
+
+def test_is_confident_still_requires_resume_confidence_when_relevant():
+    decision = Tier1Decision(
+        relevant=True,
+        relevance_confidence=0.95,
+        relevance_reason="Good match.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.0,
+        resume_reason="",
+    )
+
+    assert decision.is_confident(threshold=0.85) is False
+
+
+def test_classify_rejects_out_of_schema_resume_variant_when_relevant():
+    """The graceful default above only applies when relevant=False - a
+    genuinely relevant posting still needs a real resume choice, so an
+    invalid resume_variant here is treated as unparseable (falls back to
+    Claude), same as before."""
+    text = (
+        '{"relevant": true, "relevance_reason": "Good match.", '
+        '"resume_variant": "none", "resume_reason": ""}'
+    )
+    job = JobPosting(
+        source="gotfriends",
+        external_id="1",
+        title="Backend Engineer",
+        company="Acme",
+        description="Python, FastAPI.",
+        url="https://example.com/1",
+        apply_method=ApplyMethod.COMPANY_SITE,
+    )
+
+    decision = tier1_classifier.classify(job, llm=_FakeLlm(text))
+
+    assert decision is None
+
+
+def test_parse_completion_used_directly_by_evaluate_script():
+    """scripts/tier1/evaluate.py builds a raw llama.cpp completion dict itself
+    (rather than going through classify()) and calls parse_completion() on
+    it directly - covered here so a change to the shared parsing/confidence
+    logic can't silently break the offline eval script."""
+    prompt = "### Instruction:\nx\n\n### Input:\ny\n\n### Response:\n"
+    text = (
+        '{"relevant": false, "relevance_reason": "No match.", '
+        '"resume_variant": "project_manager", "resume_reason": "PM keywords."}'
+    )
+    output = {
+        "choices": [
+            {
+                "text": text,
+                "logprobs": {
+                    "text_offset": [len(prompt) + i for i in range(len(text))],
+                    "token_logprobs": [-0.01] * len(text),
+                },
+            }
+        ]
+    }
+
+    decision = tier1_classifier.parse_completion(prompt, output)
+
+    assert decision is not None
+    assert decision.relevant is False
+    assert decision.resume_variant == ResumeVariant.PROJECT_MANAGER
+    assert decision.relevance_confidence == pytest.approx(math.exp(-0.01), rel=1e-3)

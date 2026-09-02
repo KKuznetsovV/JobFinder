@@ -13,13 +13,19 @@ OUTPUT_SCHEMA_DESCRIPTION = """\
 Respond with ONLY a JSON object, no prose, no markdown fences:
 {
   "relevant": <true|false>,
-  "relevance_confidence": <float 0-1>,
   "relevance_reason": "<one sentence>",
   "resume_variant": "<fullstack|project_manager>",
-  "resume_confidence": <float 0-1>,
   "resume_reason": "<one sentence>"
 }
 """
+
+# Confidence is deliberately NOT part of this schema: round 1 had the model
+# emit "relevance_confidence"/"resume_confidence" fields, but the training
+# labels always used a small set of fixed placeholder values (since no
+# genuine per-example confidence existed at label time), so the model just
+# learned to reproduce those constants - useless for TIER1_CONFIDENCE_MIN
+# routing. Confidence is instead derived at inference time from the model's
+# actual output-token probabilities (see jobfinder.ai.tier1_classifier).
 
 INSTRUCTION = (
     "You are a job-application screening assistant for one specific "
