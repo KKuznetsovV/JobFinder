@@ -1,10 +1,18 @@
-"""Send an approval-request email for an Application awaiting the user's
-sign-off, and mark it as notified.
+"""Send approval-request emails for the two-stage approval flow, and mark
+applications as notified.
 
-The email includes the full cover letter, the resume choice + reasoning,
-and the intended submission method, and carries `config.APP_ID_HEADER`
-(a custom RFC822 header) so replies can be tied back to the exact
-Application row regardless of subject-line mangling by mail clients.
+Stage A (`send_stage_a_request`): sent right after resume selection, before
+any cover letter is generated - job details, chosen resume + one-line
+reason, no cover letter. Cheap to produce, meant to let the user reject a
+bad match before any cover-letter LLM call is made.
+
+Stage B (`send_approval_request`, unchanged from the original single-stage
+flow apart from its subject line): sent once Stage A is approved - includes
+the full cover letter and asks for final sign-off before submission.
+
+Both carry `config.APP_ID_HEADER` (a custom RFC822 header) so replies can be
+tied back to the exact Application row regardless of subject-line mangling
+by mail clients.
 """
 from __future__ import annotations
 
@@ -22,6 +30,77 @@ _APPLY_METHOD_LABELS = {
 }
 
 
+def build_stage_a_email(application: Application, job: JobPosting, revised: bool = False) -> EmailMessage:
+    """Build the Stage A (job + resume match) approval-request email. No
+    cover letter exists yet at this point - that's only generated after
+    Stage A is approved, to avoid spending a Claude call on a bad match.
+    """
+    if application.id is None:
+        raise ValueError("Application must be inserted (have an id) before notifying")
+
+    message = EmailMessage()
+    message["To"] = config.GMAIL_USER_EMAIL
+    message["From"] = config.GMAIL_USER_EMAIL
+    subject_prefix = "Re: " if revised else ""
+    message["Subject"] = f"{subject_prefix}New match: {job.title} at {job.company} \u2014 resume + job review"
+    message[config.APP_ID_HEADER] = str(application.id)
+
+    submission_label = _APPLY_METHOD_LABELS.get(job.apply_method.value, job.apply_method.value)
+    summary = (job.description or "")[:500]
+    tier0_line = (
+        f"Local match score: {application.tier0_score:.2f}\n" if application.tier0_score is not None else ""
+    )
+    body = (
+        f"Job: {job.title} at {job.company}\n"
+        f"Link: {job.url}\n"
+        f"Submission method: {submission_label}\n"
+        f"Relevance score: {application.relevance_score}\n"
+        f"{tier0_line}\n"
+        f"Resume chosen: {application.resume_variant.value}\n"
+        f"Reason: {application.resume_choice_reason}\n\n"
+        f"Job summary: {summary}\n\n"
+        f"No cover letter has been drafted yet. Reply APPROVE to have me draft one and "
+        f"continue, REJECT to skip this one, or tell me if you'd rather use the other resume."
+    )
+    message.set_content(body)
+    return message
+
+
+def send_stage_a_request(
+    service, application: Application, job: JobPosting, db_path: str | None = None
+) -> Application:
+    """Send the initial Stage A email and mark the application as pending
+    Stage A approval."""
+    message = build_stage_a_email(application, job)
+    response = send_raw_message(service, message.as_bytes())
+
+    application.gmail_thread_id = response["threadId"]
+    application.gmail_last_message_id = response["id"]
+    application.status = ApplicationStatus.PENDING_STAGE_A_APPROVAL
+    store.update_application(application, db_path=db_path)
+    store.append_apply_log(
+        application, "stage_a_notified", "Sent stage A (job+resume) approval email.", db_path=db_path
+    )
+    return application
+
+
+def send_stage_a_revision(
+    service, application: Application, job: JobPosting, db_path: str | None = None
+) -> Application:
+    """Re-send the Stage A email in the same thread after the resume choice
+    was corrected per the user's feedback."""
+    message = build_stage_a_email(application, job, revised=True)
+    response = send_raw_message(service, message.as_bytes(), thread_id=application.gmail_thread_id)
+
+    application.gmail_last_message_id = response["id"]
+    application.status = ApplicationStatus.PENDING_STAGE_A_APPROVAL
+    store.update_application(application, db_path=db_path)
+    store.append_apply_log(
+        application, "stage_a_notified", "Resent stage A email after resume correction.", db_path=db_path
+    )
+    return application
+
+
 def build_approval_email(application: Application, job: JobPosting) -> EmailMessage:
     if application.id is None:
         raise ValueError("Application must be inserted (have an id) before notifying")
@@ -29,7 +108,7 @@ def build_approval_email(application: Application, job: JobPosting) -> EmailMess
     message = EmailMessage()
     message["To"] = config.GMAIL_USER_EMAIL
     message["From"] = config.GMAIL_USER_EMAIL
-    message["Subject"] = f"Approve application: {job.title} at {job.company}"
+    message["Subject"] = f"Cover letter ready: {job.title} at {job.company}"
     message[config.APP_ID_HEADER] = str(application.id)
 
     submission_label = _APPLY_METHOD_LABELS.get(job.apply_method.value, job.apply_method.value)
@@ -71,7 +150,7 @@ def build_revision_email(application: Application, job: JobPosting) -> EmailMess
     message = EmailMessage()
     message["To"] = config.GMAIL_USER_EMAIL
     message["From"] = config.GMAIL_USER_EMAIL
-    message["Subject"] = f"Re: Approve application: {job.title} at {job.company}"
+    message["Subject"] = f"Re: Cover letter ready: {job.title} at {job.company}"
     message[config.APP_ID_HEADER] = str(application.id)
 
     submission_label = _APPLY_METHOD_LABELS.get(job.apply_method.value, job.apply_method.value)

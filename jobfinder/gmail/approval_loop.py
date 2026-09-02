@@ -2,11 +2,18 @@
 it via Claude into approve/reject/revise/ambiguous, and update the
 Application accordingly.
 
+Two-stage approval: `process_stage_a_reply` handles replies to the Stage A
+(job+resume match) email - approve triggers cover-letter generation (the
+expensive Claude call) via `jobfinder.pipeline.process_stage_a_approval`;
+reject/revise never reach that call. `process_reply` (unchanged in
+mechanics) now exclusively handles Stage B (cover-letter) replies.
+
 Never submits an application without an unambiguous "approve" tied to a
 specific Application's thread (matched by `config.APP_ID_HEADER` when the
 notification was sent, and by `gmail_thread_id` thereafter). Ambiguous
 replies trigger a clarifying email rather than guessing. Revision requests
-are capped at `config.MAX_REVISION_ROUNDS`.
+are capped at `config.MAX_REVISION_ROUNDS` (tracked separately per stage:
+`revision_count` for Stage B, `stage_a_revision_count` for Stage A).
 """
 from __future__ import annotations
 
@@ -16,7 +23,8 @@ from email.message import EmailMessage
 from jobfinder import config
 from jobfinder.ai.client import create_message_with_retry, get_client
 from jobfinder.db import store
-from jobfinder.db.models import Application, ApplicationStatus, JobPosting
+from jobfinder.db.models import Application, ApplicationStatus, JobPosting, ResumeVariant, utcnow_iso
+from jobfinder.gmail import notify
 from jobfinder.gmail.client import get_thread, send_raw_message
 
 _CLASSIFY_TOOL = {
@@ -75,25 +83,24 @@ def _latest_reply_text(service, application: Application) -> tuple[str | None, s
     return None, None
 
 
-def _classify_reply(reply_text: str, client=None) -> tuple[str, str]:
+def _classify_reply(reply_text: str, client=None, stage_context: str = "") -> tuple[str, str]:
     if client is None:
         client = get_client()
+
+    system_text = (
+        "Classify a user's email reply to a job-application approval request "
+        "as one of: approve, reject, revise, ambiguous. Only classify as "
+        "'approve' if the reply is unambiguous. If unsure, use 'ambiguous'. "
+        "Always call classify_reply."
+    )
+    if stage_context:
+        system_text += f" {stage_context}"
 
     message = create_message_with_retry(
         client,
         model=config.MODEL_ID,
         max_tokens=512,
-        system=[
-            {
-                "type": "text",
-                "text": (
-                    "Classify a user's email reply to a job-application approval request "
-                    "as one of: approve, reject, revise, ambiguous. Only classify as "
-                    "'approve' if the reply is unambiguous. If unsure, use 'ambiguous'. "
-                    "Always call classify_reply."
-                ),
-            }
-        ],
+        system=[{"type": "text", "text": system_text}],
         tools=[_CLASSIFY_TOOL],
         tool_choice={"type": "tool", "name": "classify_reply"},
         messages=[{"role": "user", "content": reply_text}],
@@ -107,11 +114,13 @@ def _classify_reply(reply_text: str, client=None) -> tuple[str, str]:
     raise ValueError("Claude did not call classify_reply as expected")
 
 
-def _send_clarifying_email(service, application: Application, job: JobPosting, note: str) -> None:
+def _send_clarifying_email(
+    service, application: Application, job: JobPosting, note: str, subject: str | None = None
+) -> None:
     reply = EmailMessage()
     reply["To"] = config.GMAIL_USER_EMAIL
     reply["From"] = config.GMAIL_USER_EMAIL
-    reply["Subject"] = f"Re: Approve application: {job.title} at {job.company}"
+    reply["Subject"] = subject or f"Re: Cover letter ready: {job.title} at {job.company}"
     reply[config.APP_ID_HEADER] = str(application.id)
     reply.set_content(
         f"I couldn't tell what you'd like to do with this application. {note}\n\n"
@@ -120,16 +129,101 @@ def _send_clarifying_email(service, application: Application, job: JobPosting, n
     send_raw_message(service, reply.as_bytes(), thread_id=application.gmail_thread_id)
 
 
-def process_reply(
+def _other_resume_variant(variant: ResumeVariant) -> ResumeVariant:
+    return ResumeVariant.PROJECT_MANAGER if variant == ResumeVariant.FULLSTACK else ResumeVariant.FULLSTACK
+
+
+def _stage_a_subject(job: JobPosting) -> str:
+    return f"Re: New match: {job.title} at {job.company} \u2014 resume + job review"
+
+
+def process_stage_a_reply(
     service, application: Application, job: JobPosting, db_path: str | None = None, client=None
 ) -> Application:
-    """Check for a new reply in the application's thread and act on it.
-    No-op (returns application unchanged) if there's no new reply yet."""
+    """Check for a new reply to the Stage A (job + resume match) notification
+    and act on it. No-op (returns application unchanged) if there's no new
+    reply yet.
+
+    Approve triggers `jobfinder.pipeline.process_stage_a_approval`, which
+    generates the cover letter (the expensive Claude call) and sends the
+    Stage B email - so that call only ever happens after this approval.
+    Reject and "stuck" revise never reach it.
+    """
+    from jobfinder import pipeline  # local import: pipeline doesn't import this module
+
     message_id, reply_text = _latest_reply_text(service, application)
     if message_id is None:
         return application
 
-    classification, feedback = _classify_reply(reply_text, client=client)
+    classification, feedback = _classify_reply(
+        reply_text,
+        client=client,
+        stage_context=(
+            "This is Stage A: the user is only approving the job match and resume choice - "
+            "no cover letter has been drafted yet. 'Revise' here means asking for the other "
+            "resume variant, not editing a cover letter."
+        ),
+    )
+    application.gmail_last_message_id = message_id
+
+    if classification == "approve":
+        application.stage_a_approved_at = utcnow_iso()
+        store.append_apply_log(
+            application, "stage_a_approved", "User approved job+resume via email reply.", db_path=db_path
+        )
+        application = pipeline.process_stage_a_approval(
+            application, job, service, db_path=db_path, client=client
+        )
+    elif classification == "reject":
+        application.status = ApplicationStatus.REJECTED_STAGE_A
+        store.update_application(application, db_path=db_path)
+        store.append_apply_log(
+            application, "rejected_stage_a", "User rejected via email reply.", db_path=db_path
+        )
+    elif classification == "revise":
+        if application.stage_a_revision_count >= config.MAX_REVISION_ROUNDS:
+            store.update_application(application, db_path=db_path)
+            _send_clarifying_email(
+                service,
+                application,
+                job,
+                f"You've reached the {config.MAX_REVISION_ROUNDS}-revision limit for this application.",
+                subject=_stage_a_subject(job),
+            )
+            store.append_apply_log(application, "stage_a_revision_limit_reached", feedback, db_path=db_path)
+        else:
+            application.stage_a_revision_count += 1
+            application.resume_variant = _other_resume_variant(application.resume_variant)
+            application.resume_choice_reason = feedback or "User requested the other resume."
+            store.update_application(application, db_path=db_path)
+            store.append_apply_log(application, "stage_a_revision_applied", feedback, db_path=db_path)
+            application = notify.send_stage_a_revision(service, application, job, db_path=db_path)
+    else:  # ambiguous
+        store.update_application(application, db_path=db_path)
+        _send_clarifying_email(service, application, job, feedback, subject=_stage_a_subject(job))
+        store.append_apply_log(application, "stage_a_ambiguous_reply", feedback, db_path=db_path)
+
+    return application
+
+
+def process_reply(
+    service, application: Application, job: JobPosting, db_path: str | None = None, client=None
+) -> Application:
+    """Check for a new reply in the Stage B (cover-letter) application's
+    thread and act on it. No-op (returns application unchanged) if there's
+    no new reply yet."""
+    message_id, reply_text = _latest_reply_text(service, application)
+    if message_id is None:
+        return application
+
+    classification, feedback = _classify_reply(
+        reply_text,
+        client=client,
+        stage_context=(
+            "This is Stage B: the user already approved the job+resume match and is now "
+            "reviewing the drafted cover letter before final submission."
+        ),
+    )
     application.gmail_last_message_id = message_id
 
     if classification == "approve":
@@ -137,9 +231,11 @@ def process_reply(
         store.update_application(application, db_path=db_path)
         store.append_apply_log(application, "approved", "User approved via email reply.", db_path=db_path)
     elif classification == "reject":
-        application.status = ApplicationStatus.REJECTED
+        application.status = ApplicationStatus.REJECTED_STAGE_B
         store.update_application(application, db_path=db_path)
-        store.append_apply_log(application, "rejected", "User rejected via email reply.", db_path=db_path)
+        store.append_apply_log(
+            application, "rejected_stage_b", "User rejected via email reply.", db_path=db_path
+        )
     elif classification == "revise":
         if application.revision_count >= config.MAX_REVISION_ROUNDS:
             store.update_application(application, db_path=db_path)

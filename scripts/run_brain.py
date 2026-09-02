@@ -18,7 +18,7 @@ from jobfinder import config, pipeline
 from jobfinder.ai import tier0_filter
 from jobfinder.db import store
 from jobfinder.db.models import ApplicationStatus
-from jobfinder.gmail.approval_loop import process_reply
+from jobfinder.gmail.approval_loop import process_reply, process_stage_a_reply
 from jobfinder.gmail.auth import get_gmail_service
 from jobfinder.sources.devjobs import DevJobsSource
 from jobfinder.sources.gotfriends import GotFriendsSource
@@ -62,6 +62,15 @@ def main() -> None:
                 stats["median"],
                 stats["rejected"],
             )
+
+        for application in store.list_applications_by_status(
+            ApplicationStatus.PENDING_STAGE_A_APPROVAL, db_path=config.DB_PATH
+        ):
+            job = store.get_job_posting(application.job_posting_id, db_path=config.DB_PATH)
+            try:
+                process_stage_a_reply(service, application, job, db_path=config.DB_PATH)
+            except Exception:
+                logger.exception("Stage A reply check failed for application %s", application.id)
 
         for application in store.list_applications_by_status(
             ApplicationStatus.NOTIFIED, db_path=config.DB_PATH

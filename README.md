@@ -2,10 +2,13 @@
 
 An AI job-application assistant made of two cooperating components:
 
-- **The cloud "brain"** (`scripts/run_brain.py`): polls job sources, filters
-  for relevance with Claude, picks the best-fitting resume, drafts and
-  fact-checks a cover letter, and emails you an approval request. It then
-  watches that email thread for your reply (approve / reject / revise).
+- **The cloud "brain"** (`scripts/run_brain.py`): polls job sources, screens
+  postings locally with a free embedding pre-filter, filters for relevance
+  with Claude, picks the best-fitting resume, and emails you a cheap Stage A
+  approval request (job + resume, no cover letter yet). Once you approve
+  that, it drafts and fact-checks a cover letter and emails a Stage B
+  approval request. It watches both email threads for your reply (approve /
+  reject / revise).
 - **The local "hands"** (`scripts/run_local_agent.py`): runs on your own
   machine with your real, logged-in Chrome. Once you approve an application
   by email, it submits it automatically on the company's ATS site, or - for
@@ -17,11 +20,14 @@ Both components share one local SQLite datastore (`data/jobfinder.db`).
 ```mermaid
 flowchart LR
     subgraph Cloud brain
-        A[Job sources] --> B[Relevance filter]
+        A[Job sources] --> T[Tier-0 embedding pre-filter\nno API call]
+        T -->|score >= threshold| B[Relevance filter - Claude]
+        T -->|score < threshold| Z[rejected_tier0\nno LLM call made]
         B --> C[Resume selector]
-        C --> D[Cover letter + fact-check]
-        D --> E[Gmail approval request]
-        E --> F[Gmail reply classifier]
+        C --> SA[Stage A email: job + resume\nno cover letter yet]
+        SA -->|approved| D[Cover letter + fact-check]
+        D --> SB[Stage B email: cover letter ready]
+        SB --> F[Gmail reply classifier]
     end
     F -->|approved| G[(Shared SQLite DB)]
     subgraph Local hands
@@ -50,6 +56,14 @@ flowchart LR
    - `JOBFINDER_DB_PATH` - defaults to `data/jobfinder.db`.
    - `CHROME_USER_DATA_DIR` - defaults to `chrome-profile/`.
    - `DAILY_APPLICATION_CAP` - max automatic submissions per day (default 15).
+   - `TIER0_MIN_SIMILARITY` - 0-1 cosine-similarity cutoff for the local
+     embedding pre-filter (default `0.35`); postings scoring below this
+     never reach the Claude relevance call. Lower it if you're seeing too
+     few candidates, raise it if too many obviously-irrelevant postings are
+     reaching the (paid) relevance filter.
+   - `TIER0_MODEL_NAME` - sentence-transformers model id for the pre-filter
+     (default `all-MiniLM-L6-v2`, ~90MB, downloaded once and cached under
+     `~/.cache/huggingface`).
 
 3. **Gmail setup** (least-privilege: `gmail.readonly` + `gmail.send`, never
    `gmail.modify`):
@@ -96,10 +110,35 @@ run on the machine with the seeded Chrome profile.
 pytest -q
 ```
 
-104 tests as of this writing, covering resume parsing, Gmail OAuth/client,
-job sources, scraping utilities, the Claude-backed relevance/resume/cover-
-letter/approval-reply modules, the local apply agent, ATS adapters, and both
+127 tests as of this writing, covering resume parsing, Gmail OAuth/client,
+job sources, scraping utilities, the local embedding pre-filter, the
+Claude-backed relevance/resume/cover-letter/approval-reply modules (both
+approval stages), the local apply agent, ATS adapters, and both
 browser-automation tool loops.
+
+## Cost controls: tier-0 pre-filter and two-stage approval
+
+Two changes reduce Claude API spend without changing what actually gets
+submitted:
+
+- **Tier-0 embedding pre-filter** (`jobfinder/ai/tier0_filter.py`): before
+  the Claude relevance call, each posting's title+description is embedded
+  locally (via `sentence-transformers`, no network/API call after the model
+  is first downloaded) and compared by cosine similarity against both
+  resume variants. Postings scoring below `TIER0_MIN_SIMILARITY` are logged
+  as `rejected_tier0` (an Application row is still created for audit/review)
+  and never reach any Claude call at all. `run_brain.py` logs a per-cycle
+  score distribution (min/max/median, passed/rejected counts) so you can see
+  how many LLM calls were avoided and retune the threshold.
+- **Two-stage approval** (`jobfinder/pipeline.py`,
+  `jobfinder/gmail/approval_loop.py`): a posting that passes both filters
+  first gets a cheap Stage A email (job details + which resume was picked
+  and why - no cover letter). Only once you reply APPROVE to that does the
+  (comparatively expensive) cover-letter-generation + fact-check Claude call
+  run, followed by the existing Stage B "cover letter ready" email for final
+  sign-off. Rejecting or asking for the other resume at Stage A costs
+  nothing beyond the initial relevance/resume-selection calls - the cover
+  letter is never drafted for postings you'd have rejected anyway.
 
 ## Project structure
 
@@ -108,15 +147,17 @@ jobfinder/
   config.py              # central config: model id, paths, thresholds, secrets
   db/                     # SQLite schema, models, and access layer
   resume/                 # .docx parsing + mtime-cached parsed JSON
-  gmail/                  # OAuth, thin API client, approval-request email,
-                           # reply classification/approval loop
+  gmail/                  # OAuth, thin API client, Stage A/B approval-request
+                           # emails, reply classification/approval loop
   sources/                # JobSource interface, scheduler, and per-site sources
                            # (gotfriends, devjobs, linkedin_email, jobinfo stub)
-  ai/                      # shared Anthropic client + relevance filter,
-                           # resume selector, cover letter generator
+  ai/                      # shared Anthropic client + tier-0 embedding filter,
+                           # relevance filter, resume selector, cover letter
+                           # generator
   local/                   # the "hands": apply agent, browser session,
                            # ATS adapters, accessibility-tree tool loops
-  pipeline.py              # wires relevance -> resume -> cover letter -> notify
+  pipeline.py              # wires tier0 -> relevance -> resume -> Stage A ->
+                           # (on approval) cover letter -> Stage B
   tracking.py              # status/log lifecycle queries
 scripts/
   seed_chrome_profile.py   # one-time manual Chrome login
