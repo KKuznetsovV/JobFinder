@@ -45,7 +45,7 @@ def test_process_new_posting_returns_none_when_not_relevant(tmp_path, mocker):
         return_value=Tier0Result(score=1.0, resume_hint=None),
     )
     mocker.patch(
-        "jobfinder.pipeline.relevance.is_relevant", return_value=(False, 0.1, "not a fit")
+        "jobfinder.ai.relevance.is_relevant", return_value=(False, 0.1, "not a fit")
     )
 
     result = pipeline.process_new_posting(job, gmail_service=object(), db_path=db_path)
@@ -61,7 +61,7 @@ def test_process_new_posting_rejects_below_tier0_threshold(tmp_path, mocker):
         "jobfinder.pipeline.tier0_filter.score_posting",
         return_value=Tier0Result(score=0.01, resume_hint=ResumeVariant.FULLSTACK),
     )
-    relevance_spy = mocker.patch("jobfinder.pipeline.relevance.is_relevant")
+    relevance_spy = mocker.patch("jobfinder.ai.relevance.is_relevant")
 
     result = pipeline.process_new_posting(job, gmail_service=object(), db_path=db_path)
 
@@ -88,10 +88,10 @@ def test_process_new_posting_creates_application_and_sends_stage_a(tmp_path, moc
         return_value=Tier0Result(score=0.9, resume_hint=ResumeVariant.FULLSTACK),
     )
     mocker.patch(
-        "jobfinder.pipeline.relevance.is_relevant", return_value=(True, 0.9, "great fit")
+        "jobfinder.ai.relevance.is_relevant", return_value=(True, 0.9, "great fit")
     )
     mocker.patch(
-        "jobfinder.pipeline.resume_selector.select_resume",
+        "jobfinder.ai.resume_selector.select_resume",
         return_value=(ResumeVariant.FULLSTACK, "keyword match"),
     )
     cover_letter_spy = mocker.patch("jobfinder.pipeline.cover_letter_module.generate_cover_letter")

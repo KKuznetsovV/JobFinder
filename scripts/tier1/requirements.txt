@@ -1,0 +1,16 @@
+# Training-only dependencies for the tier-1 local classifier fine-tuning
+# pipeline (scripts/tier1/). Deliberately kept SEPARATE from the main
+# requirements.txt: these are heavy (torch, unsloth, bitsandbytes) and only
+# needed on the machine actually running data generation/training/quantization,
+# not on the machine serving the trained model (which only needs
+# llama-cpp-python, already in the main requirements.txt).
+torch>=2.2
+unsloth
+trl
+transformers>=4.44
+datasets
+peft
+bitsandbytes
+accelerate
+pyyaml
+anthropic

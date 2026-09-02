@@ -11,6 +11,7 @@ beautifulsoup4>=4.12
 requests>=2.32
 lxml>=5.3
 sentence-transformers>=3.0
+llama-cpp-python>=0.3
 
 # dev / test
 pytest>=8.3

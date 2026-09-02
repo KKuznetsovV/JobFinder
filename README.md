@@ -64,6 +64,16 @@ flowchart LR
    - `TIER0_MODEL_NAME` - sentence-transformers model id for the pre-filter
      (default `all-MiniLM-L6-v2`, ~90MB, downloaded once and cached under
      `~/.cache/huggingface`).
+   - `TIER1_MODEL_ENABLED` - kill-switch for the local tier-1 classifier
+     (default `false`: every posting goes through Claude, unchanged from
+     before this feature existed). See "Tier-1 local classifier" below.
+   - `TIER1_CONFIDENCE_MIN` - 0-1 confidence cutoff below which a tier-1
+     decision falls back to a real Claude call instead (default `0.85`).
+   - `TIER1_AGREEMENT_CHECK_RATE` - fraction of confident local decisions to
+     double-check against Claude anyway, purely for accuracy tracking
+     (default `0.1`).
+   - `TIER1_MODEL_PATH` - path to the quantized GGUF model file (default
+     `models/tier1_classifier.q4_k_m.gguf`).
 
 3. **Gmail setup** (least-privilege: `gmail.readonly` + `gmail.send`, never
    `gmail.modify`):
@@ -110,11 +120,12 @@ run on the machine with the seeded Chrome profile.
 pytest -q
 ```
 
-127 tests as of this writing, covering resume parsing, Gmail OAuth/client,
+139 tests as of this writing, covering resume parsing, Gmail OAuth/client,
 job sources, scraping utilities, the local embedding pre-filter, the
 Claude-backed relevance/resume/cover-letter/approval-reply modules (both
-approval stages), the local apply agent, ATS adapters, and both
-browser-automation tool loops.
+approval stages), the local apply agent, ATS adapters, both
+browser-automation tool loops, and the tier-1 local classifier's
+confidence-routing/fallback/kill-switch/training-data-logging behavior.
 
 ## Cost controls: tier-0 pre-filter and two-stage approval
 
@@ -140,6 +151,58 @@ submitted:
   nothing beyond the initial relevance/resume-selection calls - the cover
   letter is never drafted for postings you'd have rejected anyway.
 
+## Tier-1 local classifier (optional, off by default)
+
+A fine-tuned local model can take over the relevance-filter and
+resume-selection Claude calls for postings that already passed tier-0,
+further cutting API spend once enough real usage has accumulated training
+data. Disabled by default (`TIER1_MODEL_ENABLED=false`) - with it off,
+behavior is identical to the plain Claude path described above.
+
+How it works (`jobfinder/ai/tier1_classifier.py`):
+
+- A small LoRA-fine-tuned Qwen2.5-1.5B-Instruct model (quantized to GGUF,
+  served locally via `llama-cpp-python`, no network call) predicts both
+  decisions - relevant yes/no and which resume fits - along with a
+  confidence score for each.
+- If both confidences are >= `TIER1_CONFIDENCE_MIN`, the local prediction is
+  used directly (no Claude call). Otherwise (or if the model errors, or
+  `TIER1_MODEL_ENABLED=false`, or no model file exists yet) it falls back to
+  the real Claude relevance/resume-selection calls, exactly as before.
+- A random fraction of confident local decisions (`TIER1_AGREEMENT_CHECK_RATE`)
+  are still double-checked against Claude purely to track real-world
+  agreement over time (`tier1_decisions` table, queryable via
+  `store.summarize_tier1_decisions()`; `run_brain.py` logs a per-cycle
+  summary alongside the tier-0 stats).
+- Every genuine Claude decision (fallback or otherwise) is logged as a
+  labeled training example (`tier1_training_examples` table), so production
+  traffic continuously grows the dataset available for future fine-tuning
+  rounds even before a model exists.
+
+Training pipeline (`scripts/tier1/`, adapted from the sibling SmartServe
+project's fine-tuning approach - same base model, same LoRA hyperparameters,
+same Claude-teacher-labeling workflow):
+
+```
+scripts/tier1/
+  requirements.txt              # heavy training-only deps, kept separate from
+                                 # the main requirements.txt
+  generate_synthetic_postings.py  # deterministic synthetic postings (free)
+  label_examples.py             # labels them via the real Claude relevance/
+                                 # resume-selector logic (real API calls)
+  split_dataset.py              # exports DB examples -> train/val/eval JSONL
+  config.yaml                   # base model, LoRA + training hyperparameters
+  train.py                      # Unsloth + TRL LoRA fine-tuning
+  quantize.py                   # GGUF quantization (q4_k_m)
+  evaluate.py                   # held-out eval accuracy (reuses stored labels,
+                                 # no live Claude calls)
+```
+
+Running the full pipeline requires installing
+`scripts/tier1/requirements.txt` (torch/unsloth/trl/bitsandbytes - heavy,
+GPU strongly recommended) and will make real, paid Claude API calls during
+`label_examples.py`. See each script's module docstring for exact usage.
+
 ## Project structure
 
 ```
@@ -153,16 +216,18 @@ jobfinder/
                            # (gotfriends, devjobs, linkedin_email, jobinfo stub)
   ai/                      # shared Anthropic client + tier-0 embedding filter,
                            # relevance filter, resume selector, cover letter
-                           # generator
+                           # generator, tier-1 local classifier (optional)
   local/                   # the "hands": apply agent, browser session,
                            # ATS adapters, accessibility-tree tool loops
-  pipeline.py              # wires tier0 -> relevance -> resume -> Stage A ->
+  pipeline.py              # wires tier0 -> tier1/claude routing -> Stage A ->
                            # (on approval) cover letter -> Stage B
   tracking.py              # status/log lifecycle queries
 scripts/
   seed_chrome_profile.py   # one-time manual Chrome login
   run_brain.py             # cloud brain entrypoint
   run_local_agent.py       # local hands entrypoint
+  tier1/                   # tier-1 local classifier training pipeline (see
+                           # "Tier-1 local classifier" above)
 ```
 
 ## Assumptions and deviations (read this)
