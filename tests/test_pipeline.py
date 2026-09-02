@@ -1,6 +1,7 @@
+from jobfinder.ai.tier0_filter import Tier0Result
 from jobfinder.db import store
-from jobfinder.db.models import ApplyMethod, JobPosting, ResumeVariant
-from jobfinder import pipeline
+from jobfinder.db.models import ApplicationStatus, ApplyMethod, JobPosting, ResumeVariant
+from jobfinder import pipeline, config
 
 
 def _job(db_path):
@@ -40,6 +41,10 @@ def test_process_new_posting_returns_none_when_not_relevant(tmp_path, mocker):
     store.init_db(db_path)
     job = _job(db_path)
     mocker.patch(
+        "jobfinder.pipeline.tier0_filter.score_posting",
+        return_value=Tier0Result(score=1.0, resume_hint=None),
+    )
+    mocker.patch(
         "jobfinder.pipeline.relevance.is_relevant", return_value=(False, 0.1, "not a fit")
     )
 
@@ -48,11 +53,40 @@ def test_process_new_posting_returns_none_when_not_relevant(tmp_path, mocker):
     assert result is None
 
 
+def test_process_new_posting_rejects_below_tier0_threshold(tmp_path, mocker):
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+    mocker.patch(
+        "jobfinder.pipeline.tier0_filter.score_posting",
+        return_value=Tier0Result(score=0.01, resume_hint=ResumeVariant.FULLSTACK),
+    )
+    relevance_spy = mocker.patch("jobfinder.pipeline.relevance.is_relevant")
+
+    result = pipeline.process_new_posting(job, gmail_service=object(), db_path=db_path)
+
+    assert result is None
+    relevance_spy.assert_not_called()
+
+    applications = store.list_applications_by_status(
+        ApplicationStatus.REJECTED_TIER0, db_path=db_path
+    )
+    assert len(applications) == 1
+    assert applications[0].tier0_score == 0.01
+    assert applications[0].tier0_resume_hint == ResumeVariant.FULLSTACK
+    events = [entry["event"] for entry in applications[0].apply_log]
+    assert "rejected_tier0" in events
+
+
 def test_process_new_posting_creates_application_and_notifies(tmp_path, mocker):
     db_path = tmp_path / "test.db"
     store.init_db(db_path)
     job = _job(db_path)
 
+    mocker.patch(
+        "jobfinder.pipeline.tier0_filter.score_posting",
+        return_value=Tier0Result(score=0.9, resume_hint=ResumeVariant.FULLSTACK),
+    )
     mocker.patch(
         "jobfinder.pipeline.relevance.is_relevant", return_value=(True, 0.9, "great fit")
     )

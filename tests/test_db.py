@@ -98,3 +98,73 @@ def test_processed_gmail_messages(tmp_path):
     assert not store.is_gmail_message_processed("msg-1", db_path)
     store.mark_gmail_message_processed("msg-1", "job_alert", db_path)
     assert store.is_gmail_message_processed("msg-1", db_path)
+
+
+def test_init_db_migrates_pre_tier0_applications_table(tmp_path):
+    """A DB created before the tier0_score/tier0_resume_hint columns (and the
+    'rejected_tier0' status) existed must be upgraded in place, without losing
+    any pre-existing application rows."""
+    db_path = tmp_path / "test.db"
+    with store._connect(db_path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE job_postings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL, external_id TEXT NOT NULL, title TEXT NOT NULL,
+                company TEXT NOT NULL, description TEXT NOT NULL, url TEXT NOT NULL,
+                posted_date TEXT, apply_method TEXT NOT NULL, apply_email TEXT,
+                discovered_at TEXT NOT NULL, UNIQUE (source, external_id)
+            );
+            CREATE TABLE applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_posting_id INTEGER NOT NULL REFERENCES job_postings(id),
+                resume_variant TEXT NOT NULL CHECK (resume_variant IN ('fullstack', 'project_manager')),
+                resume_choice_reason TEXT, cover_letter TEXT,
+                status TEXT NOT NULL DEFAULT 'found' CHECK (status IN (
+                    'found', 'notified', 'approved', 'rejected',
+                    'revision_requested', 'submitting', 'awaiting_my_click',
+                    'sent', 'stuck', 'failed'
+                )),
+                relevance_score REAL, gmail_thread_id TEXT, gmail_last_message_id TEXT,
+                revision_count INTEGER NOT NULL DEFAULT 0,
+                apply_log TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
+            """
+        )
+        conn.execute(
+            "INSERT INTO job_postings (source, external_id, title, company, description, url, "
+            "apply_method, discovered_at) VALUES ('gotfriends', '1', 'PM', 'Acme', 'x', "
+            "'https://example.com/1', 'company_site', '2024-01-01T00:00:00+00:00')"
+        )
+        conn.execute(
+            "INSERT INTO applications (job_posting_id, resume_variant, status, apply_log, "
+            "created_at, updated_at) VALUES (1, 'fullstack', 'found', '[]', "
+            "'2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')"
+        )
+        conn.commit()
+
+    store.init_db(db_path)  # should migrate in place, not wipe existing rows
+
+    preserved = store.get_application(1, db_path)
+    assert preserved is not None
+    assert preserved.resume_variant == ResumeVariant.FULLSTACK
+    assert preserved.tier0_score is None
+    assert preserved.tier0_resume_hint is None
+
+    # new columns/status are now usable
+    app = store.insert_application(
+        Application(
+            job_posting_id=1,
+            resume_variant=ResumeVariant.FULLSTACK,
+            status=ApplicationStatus.REJECTED_TIER0,
+            tier0_score=0.1,
+            tier0_resume_hint=ResumeVariant.FULLSTACK,
+        ),
+        db_path,
+    )
+    reloaded = store.get_application(app.id, db_path)
+    assert reloaded.status == ApplicationStatus.REJECTED_TIER0
+    assert reloaded.tier0_score == 0.1
+    assert reloaded.tier0_resume_hint == ResumeVariant.FULLSTACK
+

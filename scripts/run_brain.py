@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from jobfinder import config, pipeline
+from jobfinder.ai import tier0_filter
 from jobfinder.db import store
 from jobfinder.db.models import ApplicationStatus
 from jobfinder.gmail.approval_loop import process_reply
@@ -36,11 +37,31 @@ def main() -> None:
     service = get_gmail_service()
 
     while True:
-        for job in poll_once(SOURCES, db_path=config.DB_PATH):
+        new_postings = poll_once(SOURCES, db_path=config.DB_PATH)
+        tier0_scores = []
+        for job in new_postings:
+            tier0_result = tier0_filter.score_posting(job)
+            tier0_scores.append(tier0_result.score)
             try:
-                pipeline.process_new_posting(job, service, db_path=config.DB_PATH)
+                pipeline.process_new_posting(
+                    job, service, db_path=config.DB_PATH, tier0_result=tier0_result
+                )
             except Exception:
                 logger.exception("Pipeline failed for job posting %s", job.id)
+
+        if tier0_scores:
+            stats = tier0_filter.summarize_scores(tier0_scores)
+            logger.info(
+                "tier0 batch stats: count=%d passed=%d rejected=%d min=%.3f max=%.3f median=%.3f "
+                "(LLM calls avoided=%d)",
+                stats["count"],
+                stats["passed"],
+                stats["rejected"],
+                stats["min"],
+                stats["max"],
+                stats["median"],
+                stats["rejected"],
+            )
 
         for application in store.list_applications_by_status(
             ApplicationStatus.NOTIFIED, db_path=config.DB_PATH

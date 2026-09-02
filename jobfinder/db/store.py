@@ -38,7 +38,39 @@ def _connect(db_path: Path | str | None = None) -> sqlite3.Connection:
 def init_db(db_path: Path | str | None = None) -> None:
     """Create tables if they don't exist yet. Safe to call on every startup."""
     with _connect(db_path) as conn:
+        needs_tier0_migration = _applications_needs_tier0_migration(conn)
+        if needs_tier0_migration:
+            conn.execute("ALTER TABLE applications RENAME TO applications_pre_tier0")
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        if needs_tier0_migration:
+            conn.execute(
+                """
+                INSERT INTO applications
+                    (id, job_posting_id, resume_variant, resume_choice_reason, cover_letter,
+                     status, relevance_score, gmail_thread_id, gmail_last_message_id,
+                     revision_count, apply_log, created_at, updated_at)
+                SELECT id, job_posting_id, resume_variant, resume_choice_reason, cover_letter,
+                       status, relevance_score, gmail_thread_id, gmail_last_message_id,
+                       revision_count, apply_log, created_at, updated_at
+                FROM applications_pre_tier0
+                """
+            )
+            conn.execute("DROP TABLE applications_pre_tier0")
+        conn.commit()
+
+
+def _applications_needs_tier0_migration(conn: sqlite3.Connection) -> bool:
+    """True for a pre-existing DB created before the tier0_score/tier0_resume_hint
+    columns (and the 'rejected_tier0' status) were added - its applications table
+    must be rebuilt to pick up the new columns and relaxed status CHECK.
+
+    False for a brand new DB (table doesn't exist yet - schema.sql will create it
+    in its current shape) or one that's already been migrated.
+    """
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(applications)").fetchall()}
+    if not columns:
+        return False
+    return "tier0_score" not in columns
 
 
 @contextmanager
@@ -85,6 +117,8 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         apply_log=json.loads(row["apply_log"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+        tier0_score=row["tier0_score"],
+        tier0_resume_hint=ResumeVariant(row["tier0_resume_hint"]) if row["tier0_resume_hint"] else None,
     )
 
 
@@ -144,8 +178,9 @@ def insert_application(app: Application, db_path: Path | str | None = None) -> A
             INSERT INTO applications
                 (job_posting_id, resume_variant, resume_choice_reason, cover_letter,
                  status, relevance_score, gmail_thread_id, gmail_last_message_id,
-                 revision_count, apply_log, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 revision_count, apply_log, created_at, updated_at,
+                 tier0_score, tier0_resume_hint)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 app.job_posting_id,
@@ -160,6 +195,8 @@ def insert_application(app: Application, db_path: Path | str | None = None) -> A
                 json.dumps(app.apply_log),
                 app.created_at,
                 app.updated_at,
+                app.tier0_score,
+                app.tier0_resume_hint.value if app.tier0_resume_hint else None,
             ),
         )
         app.id = cur.lastrowid
@@ -209,7 +246,7 @@ def update_application(app: Application, db_path: Path | str | None = None) -> N
                 resume_variant = ?, resume_choice_reason = ?, cover_letter = ?,
                 status = ?, relevance_score = ?, gmail_thread_id = ?,
                 gmail_last_message_id = ?, revision_count = ?, apply_log = ?,
-                updated_at = ?
+                updated_at = ?, tier0_score = ?, tier0_resume_hint = ?
             WHERE id = ?
             """,
             (
@@ -223,6 +260,8 @@ def update_application(app: Application, db_path: Path | str | None = None) -> N
                 app.revision_count,
                 json.dumps(app.apply_log),
                 app.updated_at,
+                app.tier0_score,
+                app.tier0_resume_hint.value if app.tier0_resume_hint else None,
                 app.id,
             ),
         )

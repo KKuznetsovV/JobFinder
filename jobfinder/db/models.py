@@ -30,6 +30,7 @@ class ApplicationStatus(str, Enum):
     NOTIFIED = "notified"
     APPROVED = "approved"
     REJECTED = "rejected"
+    REJECTED_TIER0 = "rejected_tier0"
     REVISION_REQUESTED = "revision_requested"
     SUBMITTING = "submitting"
     AWAITING_MY_CLICK = "awaiting_my_click"
@@ -67,4 +68,6 @@ class Application:
     apply_log: list[dict] = field(default_factory=list)
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
+    tier0_score: float | None = None
+    tier0_resume_hint: ResumeVariant | None = None
     id: int | None = None
