@@ -23,7 +23,7 @@ from jobfinder.resume.cache import resume_path
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS = 20
+MAX_STEPS = 40
 
 _SUBMIT_TEXT_RE = re.compile(r"submit\s+application", re.IGNORECASE)
 

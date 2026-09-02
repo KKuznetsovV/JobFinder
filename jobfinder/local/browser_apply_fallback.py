@@ -25,7 +25,7 @@ from jobfinder.resume.cache import resume_path
 
 logger = logging.getLogger(__name__)
 
-MAX_STEPS = 20
+MAX_STEPS = 40
 
 _INTERACTIVE_SELECTOR = "input, textarea, select, button, a[href], [role='button'], [contenteditable='true']"
 
