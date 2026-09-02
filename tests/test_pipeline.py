@@ -78,7 +78,7 @@ def test_process_new_posting_rejects_below_tier0_threshold(tmp_path, mocker):
     assert "rejected_tier0" in events
 
 
-def test_process_new_posting_creates_application_and_notifies(tmp_path, mocker):
+def test_process_new_posting_creates_application_and_sends_stage_a(tmp_path, mocker):
     db_path = tmp_path / "test.db"
     store.init_db(db_path)
     job = _job(db_path)
@@ -94,6 +94,42 @@ def test_process_new_posting_creates_application_and_notifies(tmp_path, mocker):
         "jobfinder.pipeline.resume_selector.select_resume",
         return_value=(ResumeVariant.FULLSTACK, "keyword match"),
     )
+    cover_letter_spy = mocker.patch("jobfinder.pipeline.cover_letter_module.generate_cover_letter")
+    notify_spy = mocker.patch(
+        "jobfinder.pipeline.notify.send_stage_a_request",
+        side_effect=lambda service, app, job, db_path=None: app,
+    )
+
+    result = pipeline.process_new_posting(job, gmail_service=object(), db_path=db_path)
+
+    assert result is not None
+    assert result.cover_letter is None
+    assert result.status == ApplicationStatus.FOUND
+    assert result.relevance_score == 0.9
+    assert result.resume_variant == ResumeVariant.FULLSTACK
+    notify_spy.assert_called_once()
+    cover_letter_spy.assert_not_called()  # the expensive call must wait for Stage A approval
+
+    reloaded = store.get_application(result.id, db_path=db_path)
+    events = [entry["event"] for entry in reloaded.apply_log]
+    assert "relevance_passed" in events
+
+
+def test_process_stage_a_approval_generates_cover_letter_and_notifies(tmp_path, mocker):
+    from jobfinder.db.models import Application
+
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+    application = Application(
+        job_posting_id=job.id,
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_choice_reason="keyword match",
+        status=ApplicationStatus.PENDING_STAGE_A_APPROVAL,
+        relevance_score=0.9,
+    )
+    application = store.insert_application(application, db_path)
+
     mocker.patch(
         "jobfinder.pipeline.cover_letter_module.generate_cover_letter",
         return_value=("Final letter.", ["invented claim x"]),
@@ -103,18 +139,16 @@ def test_process_new_posting_creates_application_and_notifies(tmp_path, mocker):
         side_effect=lambda service, app, job, db_path=None: app,
     )
 
-    result = pipeline.process_new_posting(job, gmail_service=object(), db_path=db_path)
+    result = pipeline.process_stage_a_approval(application, job, gmail_service=object(), db_path=db_path)
 
-    assert result is not None
     assert result.cover_letter == "Final letter."
-    assert result.relevance_score == 0.9
-    assert result.resume_variant == ResumeVariant.FULLSTACK
     notify_spy.assert_called_once()
 
     reloaded = store.get_application(result.id, db_path=db_path)
     events = [entry["event"] for entry in reloaded.apply_log]
-    assert "relevance_passed" in events
+    assert "cover_letter_generated" in events
     assert "fact_check_issues" in events
+
 
 
 def test_process_revision_request_regenerates_and_resends(tmp_path, mocker):

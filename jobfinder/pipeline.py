@@ -30,9 +30,10 @@ def process_new_posting(
     tier0_result: tier0_filter.Tier0Result | None = None,
 ) -> Application | None:
     """Run the tier-0 embedding pre-filter, then (if it passes) relevance
-    filtering, and if relevant, resume selection + cover letter generation +
+    filtering, and if relevant, resume selection + the Stage A (job+resume)
     approval-request notification for `job` (which must already be inserted,
-    i.e. have an id).
+    i.e. have an id). No cover letter is generated here - that only happens
+    once Stage A is approved, via `process_stage_a_approval`.
 
     Postings rejected by the tier-0 filter get an Application row with
     status=REJECTED_TIER0 (for audit/review) but no Claude call is ever made
@@ -77,15 +78,11 @@ def process_new_posting(
         return None
 
     variant, resume_reason = resume_selector.select_resume(job, client=client)
-    final_cover_letter, fact_check_issues = cover_letter_module.generate_cover_letter(
-        job, variant, client=client
-    )
 
     application = Application(
         job_posting_id=job.id,
         resume_variant=variant,
         resume_choice_reason=resume_reason,
-        cover_letter=final_cover_letter,
         status=ApplicationStatus.FOUND,
         relevance_score=score,
         tier0_score=tier0_result.score,
@@ -95,6 +92,23 @@ def process_new_posting(
     store.append_apply_log(
         application, "relevance_passed", f"score={score:.2f}: {reason}", db_path=db_path
     )
+
+    application = notify.send_stage_a_request(gmail_service, application, job, db_path=db_path)
+    return application
+
+
+def process_stage_a_approval(
+    application: Application, job: JobPosting, gmail_service, db_path: str | None = None, client=None
+) -> Application:
+    """Run once the user approves the Stage A (job+resume) notification:
+    generates the cover letter (the expensive Claude call, now deferred until
+    this point) and fact-checks it, then sends the Stage B approval email.
+    """
+    final_cover_letter, fact_check_issues = cover_letter_module.generate_cover_letter(
+        job, application.resume_variant, client=client
+    )
+    application.cover_letter = final_cover_letter
+    store.append_apply_log(application, "cover_letter_generated", "", db_path=db_path)
     if fact_check_issues:
         store.append_apply_log(
             application, "fact_check_issues", "; ".join(fact_check_issues), db_path=db_path

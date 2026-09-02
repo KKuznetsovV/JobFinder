@@ -27,10 +27,13 @@ class ResumeVariant(str, Enum):
 
 class ApplicationStatus(str, Enum):
     FOUND = "found"
-    NOTIFIED = "notified"
+    NOTIFIED = "notified"  # Stage B (cover letter) approval pending
+    PENDING_STAGE_A_APPROVAL = "pending_stage_a_approval"  # Stage A (job+resume) approval pending
     APPROVED = "approved"
-    REJECTED = "rejected"
+    REJECTED = "rejected"  # legacy pre-two-stage rejection, no longer written
     REJECTED_TIER0 = "rejected_tier0"
+    REJECTED_STAGE_A = "rejected_stage_a"
+    REJECTED_STAGE_B = "rejected_stage_b"
     REVISION_REQUESTED = "revision_requested"
     SUBMITTING = "submitting"
     AWAITING_MY_CLICK = "awaiting_my_click"
@@ -64,10 +67,12 @@ class Application:
     relevance_score: float | None = None
     gmail_thread_id: str | None = None
     gmail_last_message_id: str | None = None
-    revision_count: int = 0
+    revision_count: int = 0  # Stage B (cover-letter) revisions only
     apply_log: list[dict] = field(default_factory=list)
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
     tier0_score: float | None = None
     tier0_resume_hint: ResumeVariant | None = None
+    stage_a_approved_at: str | None = None
+    stage_a_revision_count: int = 0
     id: int | None = None

@@ -44,7 +44,7 @@ def test_build_approval_email_includes_app_id_header_and_content(tmp_path):
     message = notify.build_approval_email(application, job)
 
     assert message[config.APP_ID_HEADER] == str(application.id)
-    assert "Approve application" in message["Subject"]
+    assert "Cover letter ready" in message["Subject"]
     body = message.get_content()
     assert "Dear hiring team" in body
     assert "fullstack" in body
@@ -92,7 +92,7 @@ def test_build_revision_email_is_a_reply_with_revised_letter(tmp_path):
 
     message = notify.build_revision_email(application, job)
 
-    assert message["Subject"].startswith("Re: Approve application")
+    assert message["Subject"].startswith("Re: Cover letter ready")
     body = message.get_content()
     assert "Shorter revised letter." in body
 
