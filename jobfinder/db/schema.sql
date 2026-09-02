@@ -51,3 +51,41 @@ CREATE TABLE IF NOT EXISTS processed_gmail_messages (
     purpose      TEXT NOT NULL,   -- job_alert | approval_reply
     processed_at TEXT NOT NULL
 );
+
+-- Labeled examples for fine-tuning the tier-1 local classifier (see
+-- jobfinder/ai/tier1_classifier.py). Logged every time a genuine Claude
+-- relevance/resume decision is made (source='production'), so training data
+-- accumulates during normal operation even before the model exists;
+-- synthetic examples generated offline (source='synthetic') are added later
+-- to supplement real volume.
+CREATE TABLE IF NOT EXISTS tier1_training_examples (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_posting_id     INTEGER REFERENCES job_postings(id),
+    title              TEXT NOT NULL,
+    company            TEXT NOT NULL,
+    description        TEXT NOT NULL,
+    relevant            INTEGER NOT NULL CHECK (relevant IN (0, 1)),
+    relevance_score     REAL NOT NULL,
+    relevance_reason    TEXT NOT NULL,
+    resume_variant       TEXT CHECK (resume_variant IN ('fullstack', 'project_manager') OR resume_variant IS NULL),
+    resume_reason        TEXT,     -- NULL when not relevant (resume was never chosen)
+    source               TEXT NOT NULL DEFAULT 'production' CHECK (source IN ('production', 'synthetic')),
+    created_at           TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tier1_training_examples_source ON tier1_training_examples(source);
+
+-- One row per tier1-routed posting: which path handled it, and (when
+-- spot-checked against Claude) whether the two agreed. Lets real-world
+-- tier1 accuracy be queried over time, not just at initial eval.
+CREATE TABLE IF NOT EXISTS tier1_decisions (
+    id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_posting_id        INTEGER REFERENCES job_postings(id),
+    path                  TEXT NOT NULL CHECK (path IN ('claude', 'claude_fallback', 'tier1', 'tier1_spot_checked')),
+    relevance_confidence  REAL,
+    resume_confidence     REAL,
+    agreement             INTEGER CHECK (agreement IN (0, 1) OR agreement IS NULL),
+    created_at            TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_tier1_decisions_path ON tier1_decisions(path);

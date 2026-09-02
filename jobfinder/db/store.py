@@ -19,6 +19,8 @@ from jobfinder.db.models import (
     ApplyMethod,
     JobPosting,
     ResumeVariant,
+    Tier1DecisionLog,
+    Tier1TrainingExample,
     utcnow_iso,
 )
 
@@ -288,3 +290,123 @@ def mark_gmail_message_processed(
             "VALUES (?, ?, ?)",
             (message_id, purpose, utcnow_iso()),
         )
+
+
+# --- tier1_training_examples ---------------------------------------------------
+
+def _row_to_tier1_training_example(row: sqlite3.Row) -> Tier1TrainingExample:
+    return Tier1TrainingExample(
+        id=row["id"],
+        job_posting_id=row["job_posting_id"],
+        title=row["title"],
+        company=row["company"],
+        description=row["description"],
+        relevant=bool(row["relevant"]),
+        relevance_score=row["relevance_score"],
+        relevance_reason=row["relevance_reason"],
+        resume_variant=ResumeVariant(row["resume_variant"]) if row["resume_variant"] else None,
+        resume_reason=row["resume_reason"],
+        source=row["source"],
+        created_at=row["created_at"],
+    )
+
+
+def insert_tier1_training_example(
+    example: Tier1TrainingExample, db_path: Path | str | None = None
+) -> Tier1TrainingExample:
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO tier1_training_examples
+                (job_posting_id, title, company, description, relevant, relevance_score,
+                 relevance_reason, resume_variant, resume_reason, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                example.job_posting_id,
+                example.title,
+                example.company,
+                example.description,
+                int(example.relevant),
+                example.relevance_score,
+                example.relevance_reason,
+                example.resume_variant.value if example.resume_variant else None,
+                example.resume_reason,
+                example.source,
+                example.created_at,
+            ),
+        )
+        example.id = cur.lastrowid
+        return example
+
+
+def count_tier1_training_examples(source: str | None = None, db_path: Path | str | None = None) -> int:
+    with get_conn(db_path) as conn:
+        if source:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM tier1_training_examples WHERE source = ?", (source,)
+            ).fetchone()
+        else:
+            row = conn.execute("SELECT COUNT(*) AS n FROM tier1_training_examples").fetchone()
+        return row["n"]
+
+
+def export_tier1_training_examples(db_path: Path | str | None = None) -> list[Tier1TrainingExample]:
+    """All logged examples (production + synthetic), oldest first - used by
+    the offline training-data export/build-dataset scripts, not the live
+    pipeline."""
+    with get_conn(db_path) as conn:
+        rows = conn.execute("SELECT * FROM tier1_training_examples ORDER BY id").fetchall()
+        return [_row_to_tier1_training_example(row) for row in rows]
+
+
+# --- tier1_decisions ------------------------------------------------------------
+
+def insert_tier1_decision_log(
+    entry: Tier1DecisionLog, db_path: Path | str | None = None
+) -> Tier1DecisionLog:
+    with get_conn(db_path) as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO tier1_decisions
+                (job_posting_id, path, relevance_confidence, resume_confidence, agreement, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                entry.job_posting_id,
+                entry.path,
+                entry.relevance_confidence,
+                entry.resume_confidence,
+                None if entry.agreement is None else int(entry.agreement),
+                entry.created_at,
+            ),
+        )
+        entry.id = cur.lastrowid
+        return entry
+
+
+def summarize_tier1_decisions(since_iso: str | None = None, db_path: Path | str | None = None) -> dict:
+    """Aggregate counts for the cost/accuracy report: how many postings were
+    handled by the local model alone, how many fell back to Claude, how many
+    were spot-checked, and the agreement rate among those spot-checks."""
+    with get_conn(db_path) as conn:
+        query = "SELECT path, agreement FROM tier1_decisions"
+        params: tuple = ()
+        if since_iso:
+            query += " WHERE created_at >= ?"
+            params = (since_iso,)
+        rows = conn.execute(query, params).fetchall()
+
+    total = len(rows)
+    local_only = sum(1 for r in rows if r["path"] == "tier1")
+    claude_fallback = sum(1 for r in rows if r["path"] == "claude_fallback")
+    spot_checked = sum(1 for r in rows if r["path"] == "tier1_spot_checked")
+    agreements = [bool(r["agreement"]) for r in rows if r["agreement"] is not None]
+    agreement_rate = (sum(agreements) / len(agreements)) if agreements else None
+    return {
+        "total": total,
+        "local_only": local_only,
+        "claude_fallback": claude_fallback,
+        "spot_checked": spot_checked,
+        "agreement_rate": agreement_rate,
+    }

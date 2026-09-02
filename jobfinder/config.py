@@ -60,6 +60,27 @@ DAILY_APPLICATION_CAP = int(os.environ.get("DAILY_APPLICATION_CAP", "25"))
 # this score never reach the relevance/resume-selection/cover-letter LLM calls.
 TIER0_MIN_SIMILARITY = float(os.environ.get("TIER0_MIN_SIMILARITY", "0.35"))
 TIER0_MODEL_NAME = os.environ.get("TIER0_MODEL_NAME", "all-MiniLM-L6-v2")
+
+# Tier-1 local fine-tuned classifier (LoRA-tuned Qwen2.5-1.5B-Instruct, see
+# scripts/tier1/) that can replace the Claude relevance-filter and
+# resume-selection calls for postings that already passed tier-0. Kill-switch
+# defaults to off (no trained model shipped yet / instant revert if something
+# looks wrong): false means every posting goes through the pre-tier1
+# all-Claude path, identical to before this feature existed.
+TIER1_MODEL_ENABLED = os.environ.get("TIER1_MODEL_ENABLED", "false").lower() == "true"
+# 0-1 confidence cutoff, applied to BOTH the relevance and resume-selection
+# decisions; below this on either, fall back to the real Claude calls for
+# that posting instead of trusting the local model. Start conservative -
+# retune once jobfinder.db.store.summarize_tier1_decisions() shows the
+# model's real agreement rate with Claude over enough spot-checks.
+TIER1_CONFIDENCE_MIN = float(os.environ.get("TIER1_CONFIDENCE_MIN", "0.85"))
+# Fraction of confident local-model decisions to double-check against Claude
+# anyway, purely to log agreement/disagreement (0.1 = roughly 1 in 10).
+TIER1_AGREEMENT_CHECK_RATE = float(os.environ.get("TIER1_AGREEMENT_CHECK_RATE", "0.1"))
+TIER1_MODEL_PATH = Path(
+    os.environ.get("TIER1_MODEL_PATH", str(BASE_DIR / "models" / "tier1_classifier.q4_k_m.gguf"))
+)
+
 SCRAPE_MIN_DELAY_SECONDS = 3
 SCRAPE_MAX_DELAY_SECONDS = 8
 USER_AGENT = "JobFinderBot/0.1 (+personal job-search assistant; single user, low volume)"

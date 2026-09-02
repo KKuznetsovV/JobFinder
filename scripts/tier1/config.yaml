@@ -1,0 +1,35 @@
+base_model: unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit
+max_seq_length: 1024
+seed: 42
+
+lora:
+  r: 16
+  alpha: 16
+  dropout: 0
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+training:
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  warmup_steps: 20
+  num_epochs: 3
+  learning_rate: 0.0002
+  eval_steps: 50
+  bf16: true
+
+data:
+  train_path: scripts/tier1/data/train.jsonl
+  val_path: scripts/tier1/data/val.jsonl
+
+output:
+  adapter_dir: scripts/tier1/output/lora_adapter
+  gguf_dir: models
+  gguf_name: tier1_classifier
+  quantization_method: q4_k_m

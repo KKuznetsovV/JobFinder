@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jobfinder import config, pipeline
 from jobfinder.ai import tier0_filter
 from jobfinder.db import store
-from jobfinder.db.models import ApplicationStatus
+from jobfinder.db.models import ApplicationStatus, utcnow_iso
 from jobfinder.gmail.approval_loop import process_reply, process_stage_a_reply
 from jobfinder.gmail.auth import get_gmail_service
 from jobfinder.sources.devjobs import DevJobsSource
@@ -37,6 +37,7 @@ def main() -> None:
     service = get_gmail_service()
 
     while True:
+        cycle_started_at = utcnow_iso()
         new_postings = poll_once(SOURCES, db_path=config.DB_PATH)
         tier0_scores = []
         for job in new_postings:
@@ -61,6 +62,19 @@ def main() -> None:
                 stats["max"],
                 stats["median"],
                 stats["rejected"],
+            )
+
+        tier1_stats = store.summarize_tier1_decisions(since_iso=cycle_started_at, db_path=config.DB_PATH)
+        if tier1_stats["total"]:
+            agreement_rate = tier1_stats["agreement_rate"]
+            logger.info(
+                "tier1 batch stats: total=%d local_only=%d claude_fallback=%d spot_checked=%d "
+                "agreement_rate=%s",
+                tier1_stats["total"],
+                tier1_stats["local_only"],
+                tier1_stats["claude_fallback"],
+                tier1_stats["spot_checked"],
+                f"{agreement_rate:.3f}" if agreement_rate is not None else "n/a",
             )
 
         for application in store.list_applications_by_status(

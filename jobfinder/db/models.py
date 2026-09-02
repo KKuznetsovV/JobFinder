@@ -76,3 +76,37 @@ class Application:
     stage_a_approved_at: str | None = None
     stage_a_revision_count: int = 0
     id: int | None = None
+
+
+@dataclass
+class Tier1TrainingExample:
+    """One labeled (job posting -> relevance + resume decision) example for
+    fine-tuning the tier-1 local classifier. `source` distinguishes real,
+    production-logged examples from offline-generated synthetic ones."""
+
+    job_posting_id: int | None
+    title: str
+    company: str
+    description: str
+    relevant: bool
+    relevance_score: float
+    relevance_reason: str
+    resume_variant: ResumeVariant | None = None
+    resume_reason: str | None = None
+    source: str = "production"  # "production" | "synthetic"
+    created_at: str = field(default_factory=utcnow_iso)
+    id: int | None = None
+
+
+@dataclass
+class Tier1DecisionLog:
+    """One row per tier1-routed posting, for tracking real-world local-model
+    vs. Claude agreement over time (see jobfinder.ai.tier1_classifier)."""
+
+    job_posting_id: int | None
+    path: str  # "claude" | "claude_fallback" | "tier1" | "tier1_spot_checked"
+    relevance_confidence: float | None = None
+    resume_confidence: float | None = None
+    agreement: bool | None = None
+    created_at: str = field(default_factory=utcnow_iso)
+    id: int | None = None

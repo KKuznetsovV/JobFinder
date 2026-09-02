@@ -12,9 +12,8 @@ import logging
 
 from jobfinder import config
 from jobfinder.ai import cover_letter as cover_letter_module
-from jobfinder.ai import relevance
-from jobfinder.ai import resume_selector
 from jobfinder.ai import tier0_filter
+from jobfinder.ai import tier1_classifier
 from jobfinder.db import store
 from jobfinder.db.models import Application, ApplicationStatus, JobPosting, ResumeVariant
 from jobfinder.gmail import notify
@@ -29,16 +28,18 @@ def process_new_posting(
     client=None,
     tier0_result: tier0_filter.Tier0Result | None = None,
 ) -> Application | None:
-    """Run the tier-0 embedding pre-filter, then (if it passes) relevance
-    filtering, and if relevant, resume selection + the Stage A (job+resume)
-    approval-request notification for `job` (which must already be inserted,
-    i.e. have an id). No cover letter is generated here - that only happens
-    once Stage A is approved, via `process_stage_a_approval`.
+    """Run the tier-0 embedding pre-filter, then route the relevance +
+    resume-selection decision through the tier-1 local classifier (falling
+    back to Claude when unconfident or disabled - see
+    `jobfinder.ai.tier1_classifier.decide`), and if relevant, send the Stage A
+    (job+resume) approval-request notification for `job` (which must already
+    be inserted, i.e. have an id). No cover letter is generated here - that
+    only happens once Stage A is approved, via `process_stage_a_approval`.
 
     Postings rejected by the tier-0 filter get an Application row with
     status=REJECTED_TIER0 (for audit/review) but no Claude call is ever made
-    for them. Postings rejected by the Claude relevance filter get no
-    Application row at all, same as before.
+    for them. Postings rejected by the relevance decision get no Application
+    row at all, same as before.
 
     Returns the created Application, or None if the job was filtered out
     (by either filter) - in both cases the caller should treat it as
@@ -72,26 +73,34 @@ def process_new_posting(
         )
         return None
 
-    passes, score, reason = relevance.is_relevant(job, client=client)
-    if not passes:
-        logger.info("Filtered out job %s (%s): score=%.2f - %s", job.id, job.title, score, reason)
+    decision = tier1_classifier.decide(job, db_path=db_path, client=client)
+    if not decision.passes:
+        logger.info(
+            "Filtered out job %s (%s): score=%.2f - %s [path=%s]",
+            job.id, job.title, decision.score, decision.reason, decision.path,
+        )
         return None
-
-    variant, resume_reason = resume_selector.select_resume(job, client=client)
 
     application = Application(
         job_posting_id=job.id,
-        resume_variant=variant,
-        resume_choice_reason=resume_reason,
+        resume_variant=decision.resume_variant,
+        resume_choice_reason=decision.resume_reason,
         status=ApplicationStatus.FOUND,
-        relevance_score=score,
+        relevance_score=decision.score,
         tier0_score=tier0_result.score,
         tier0_resume_hint=tier0_result.resume_hint,
     )
     application = store.insert_application(application, db_path=db_path)
     store.append_apply_log(
-        application, "relevance_passed", f"score={score:.2f}: {reason}", db_path=db_path
+        application,
+        "relevance_passed",
+        f"score={decision.score:.2f} path={decision.path}: {decision.reason}",
+        db_path=db_path,
     )
+    if decision.agreement is not None:
+        store.append_apply_log(
+            application, "tier1_agreement_check", f"agreement={decision.agreement}", db_path=db_path
+        )
 
     application = notify.send_stage_a_request(gmail_service, application, job, db_path=db_path)
     return application
