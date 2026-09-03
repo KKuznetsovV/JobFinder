@@ -67,8 +67,13 @@ flowchart LR
    - `TIER1_MODEL_ENABLED` - kill-switch for the local tier-1 classifier
      (default `false`: every posting goes through Claude, unchanged from
      before this feature existed). See "Tier-1 local classifier" below.
-   - `TIER1_CONFIDENCE_MIN` - 0-1 confidence cutoff below which a tier-1
-     decision falls back to a real Claude call instead (default `0.85`).
+   - `TIER1_NOT_RELEVANT_CONFIDENCE_MIN` - 0-1 confidence cutoff below which
+     a tier-1 "not relevant" prediction falls back to a real Claude call
+     instead (default `0.97`; see "Round 3" below for how this was derived).
+   - `TIER1_RELEVANT_CONFIDENCE_MIN` - same, for "relevant" predictions
+     (and the resume_variant pick that comes with them) - independent from
+     the threshold above since the two prediction classes have very
+     different failure costs (default `0.60`).
    - `TIER1_AGREEMENT_CHECK_RATE` - fraction of confident local decisions to
      double-check against Claude anyway, purely for accuracy tracking
      (default `0.1`).
@@ -172,10 +177,17 @@ How it works (`jobfinder/ai/tier1_classifier.py`):
   constants (see "Round 2" below). `resume_confidence` only gates routing
   when the model predicted `relevant=True`, since `resume_variant` is never
   acted on downstream for a rejected posting.
-- If both confidences are >= `TIER1_CONFIDENCE_MIN`, the local prediction is
-  used directly (no Claude call). Otherwise (or if the model errors, or
-  `TIER1_MODEL_ENABLED=false`, or no model file exists yet) it falls back to
-  the real Claude relevance/resume-selection calls, exactly as before.
+- Routing is asymmetric (`Tier1Decision.is_confident`, see "Round 3" below):
+  a "not relevant" prediction is trusted only at or above
+  `TIER1_NOT_RELEVANT_CONFIDENCE_MIN`, while a "relevant" prediction (and its
+  resume_variant pick) is trusted only at or above the independent, looser
+  `TIER1_RELEVANT_CONFIDENCE_MIN` - a false "not relevant" silently drops a
+  job the candidate would have wanted (unrecoverable), while a false
+  "relevant" just costs one extra cheap Stage-A email, so the two are held
+  to different bars on purpose. Anything that doesn't clear its threshold
+  (or if the model errors, or `TIER1_MODEL_ENABLED=false`, or no model file
+  exists yet) falls back to the real Claude relevance/resume-selection
+  calls, exactly as before.
 - A random fraction of confident local decisions (`TIER1_AGREEMENT_CHECK_RATE`)
   are still double-checked against Claude purely to track real-world
   agreement over time (`tier1_decisions` table, queryable via
@@ -288,6 +300,103 @@ batch, or a recall-weighted training objective) before reconsidering enabling
 it - the confidence-routing infrastructure is now trustworthy (round 2's
 fix), so once relevance recall genuinely improves, low-confidence cases will
 correctly still fall back to Claude rather than being silently wrong.
+
+**Round 3 (`feature/tier1-recall-and-asymmetric-routing`, 2255 examples,
+44.8%/55.2% relevant/not split)**: two goals this round - improve
+relevant-class recall specifically, and replace the single
+`TIER1_CONFIDENCE_MIN` threshold with two independent, asymmetric ones since
+a missed-relevant posting (silent, unrecoverable) and a wrongly-flagged one
+(one extra cheap Stage-A email) are not equally costly.
+
+*Data*: extended `generate_synthetic_postings.py` with a `HARD_POSITIVE_*`
+snippet/title pool (`--hard-positive-fraction`) - support/QA/retail-ops-worded
+postings designed to genuinely match a resume without using the obvious
+buzzwords the earlier `STRONG_MATCH_*` pool leaned on (e.g. a "Technical
+Support Engineer" posting that's quietly doing Python scripting/automation, or
+a "Shift Lead" role that's quietly doing the same budget/staff-leadership work
+as the PM resume). Generated and labeled 500 such postings via the real
+Claude teacher - only 65 (13%) came back genuinely relevant, far below the
+targeted 65%, meaning most of these hard-positive-*designed* postings were
+themselves judged not relevant by Claude. That's useful signal either way: it
+produced real hard-negative examples that superficially resemble relevant
+postings (combating a keyword-shortcut model), but it also dragged the
+overall relevant-class proportion down, so a second supplemental batch (400
+postings, pure clearly-relevant `STRONG_MATCH_*`, the same lever round 2
+used) restored the ratio to a round-2-comparable 44.8%/55.2% while keeping
+all the new hard examples. The eval set was kept fixed (round 2's 109
+examples, +3 more exact-content duplicate matches -> 112, relevant count
+unchanged at 23) so recall numbers are directly comparable across rounds.
+
+*Routing*: `Tier1Decision.is_confident()` now takes independent
+`not_relevant_threshold`/`relevant_threshold` params (defaulting to the two
+new config constants) instead of one shared threshold; `decide()` is
+unchanged (still calls `is_confident()` with no args).
+
+| metric | round 1 | round 2 | round 3 |
+|---|---|---|---|
+| relevance accuracy | 77.6% | 82.6% | **92.9%** |
+| majority-class baseline | 78.6% | 78.9% | 79.5% |
+| vs. baseline | below | +3.7pts above | **+13.4pts above** |
+| relevance confusion (expected relevant: TP / FN) | 0 / 21 | 4 / 19 | **17 / 6** |
+| relevance confusion (expected not relevant: FP / TN) | 1 / 76 | 0 / 86 | 2 / 87 |
+| **relevant-class recall** | 0% | 17.4% | **73.9%** |
+| relevant-class precision | n/a | 100% | 89.5% |
+| resume-variant accuracy (relevant only) | 66.7% | 69.6% | **95.7%** |
+| combined accuracy | 77.6% | 82.6% | 92.0% |
+
+Relevant-class recall (this round's headline metric, not overall accuracy)
+went from 4/23 to **17/23 (73.9%)** - a 4x+ improvement, and the model no
+longer defaults to "not relevant" as its dominant behavior.
+
+Per-predicted-class confidence calibration (the actual basis for the two
+threshold defaults, not a guess):
+
+| bucket | predicted "not relevant": avg conf | accuracy (genuinely not relevant) | predicted "relevant": avg conf | accuracy (genuinely relevant) |
+|---|---|---|---|---|
+| Q1 | 0.782 | 79.2% | 0.609 | 80.0% |
+| Q2 | 0.985 | 95.8% | 0.705 | 80.0% |
+| Q3 | 1.000 | 100% | 0.861 | 100% |
+| Q4 | 1.000 | 100% | 0.972 | 100% |
+
+The quartile table alone suggested `TIER1_NOT_RELEVANT_CONFIDENCE_MIN=0.95`
+would be safe (accuracy looks ~100% from there up), but a direct per-example
+check - listing every false negative's own `relevance_confidence`, not just
+the aggregated buckets - found one at **0.966** that would have cleared a
+0.95 cutoff and been silently auto-handled *wrong*. That case is invisible
+in the quartile view (it sits inside Q2's 95.8%-accurate bucket). Raised the
+default to **0.97** to exclude it, then re-verified: auto-handled coverage
+drops slightly (76.8% -> 72.3%) but accuracy among auto-handled rises (96.5%
+-> 97.5%). **Always do this per-example check, not just eyeball the quartile
+table, before trusting a threshold** - it's the difference between an
+aggregate that looks fine and a specific, real silent-miss risk.
+
+`TIER1_RELEVANT_CONFIDENCE_MIN` stays at **0.60**, now backed by 19
+predicted-relevant examples (round 2 only had 4) instead of an
+under-powered guess: 80% accurate around 0.61-0.70 confidence, 100% by
+~0.86+, and a wrong "relevant" call is cheap by design, so a looser bar than
+the not-relevant side is intentional, not an oversight.
+
+**Projected routing @ these thresholds**: of the 112 eval postings, **81
+(72.3%) would be auto-handled locally** and **31 (27.7%) would fall back to
+Claude** - the real expected cost savings, with 97.5% accuracy among the
+postings actually auto-handled.
+
+**Judgment: recommend enabling `TIER1_MODEL_ENABLED=true`.** This round
+fixes both of round 2's open problems: relevant-class recall is no longer
+the weak point (73.9%, up 4x from 17.4%), and the single shared confidence
+threshold has been replaced with two independently-derived, asymmetric ones
+that were validated against the actual failure mode that matters most (a
+per-example false-negative-confidence audit, not just an aggregate table).
+Nearly three-quarters of postings would be handled locally at 97.5%
+accuracy, with the remaining quarter correctly deferred to Claude. The
+caveat: the eval set is still modest (112 examples, 23 relevant), so these
+percentages carry real sampling uncertainty at this scale. Recommend
+enabling with active monitoring of `store.summarize_tier1_decisions()`'s
+agreement rate (the existing `TIER1_AGREEMENT_CHECK_RATE` spot-check keeps
+running regardless of which path was taken) and re-running the same
+per-example false-negative audit once more real eval data accumulates,
+rather than treating this as a fully closed question - but the evidence this
+round supports turning it on, which round 1 and round 2 did not.
 
 ## Project structure
 

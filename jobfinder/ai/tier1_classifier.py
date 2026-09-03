@@ -40,17 +40,29 @@ class Tier1Decision:
     resume_confidence: float
     resume_reason: str
 
-    def is_confident(self, threshold: float | None = None) -> bool:
-        """resume_confidence only gates the decision when relevant=True -
-        resume_variant is never acted on downstream for a rejected posting,
-        so a noisy/low resume-confidence there shouldn't force an otherwise
-        confident "not relevant" call to fall back to Claude (this used to
-        needlessly break calibration: correct not-relevant predictions with
-        a low-signal resume guess looked "unconfident" overall)."""
-        threshold = config.TIER1_CONFIDENCE_MIN if threshold is None else threshold
+    def is_confident(
+        self, not_relevant_threshold: float | None = None, relevant_threshold: float | None = None
+    ) -> bool:
+        """Asymmetric confidence gate: "not relevant" and "relevant" predictions
+        are trusted against independent thresholds, since the two failure
+        modes have very different costs (a false "not relevant" silently
+        drops a job the candidate would have wanted; a false "relevant" just
+        costs one extra cheap Stage-A email). resume_confidence only gates the
+        decision when relevant=True - resume_variant is never acted on
+        downstream for a rejected posting, so a noisy/low resume-confidence
+        there shouldn't force an otherwise confident "not relevant" call to
+        fall back to Claude (this used to needlessly break calibration:
+        correct not-relevant predictions with a low-signal resume guess
+        looked "unconfident" overall)."""
+        not_relevant_threshold = (
+            config.TIER1_NOT_RELEVANT_CONFIDENCE_MIN if not_relevant_threshold is None else not_relevant_threshold
+        )
+        relevant_threshold = (
+            config.TIER1_RELEVANT_CONFIDENCE_MIN if relevant_threshold is None else relevant_threshold
+        )
         if not self.relevant:
-            return self.relevance_confidence >= threshold
-        return self.relevance_confidence >= threshold and self.resume_confidence >= threshold
+            return self.relevance_confidence >= not_relevant_threshold
+        return self.relevance_confidence >= relevant_threshold and self.resume_confidence >= relevant_threshold
 
 
 @dataclass
@@ -190,8 +202,9 @@ def classify(job: JobPosting, llm=None) -> Tier1Decision | None:
 
 def decide(job: JobPosting, db_path: str | None = None, client=None, llm=None) -> RoutedDecision:
     """Route `job` (already past tier-0) to either the local model or Claude,
-    per config.TIER1_MODEL_ENABLED and the confidence threshold. Always logs
-    a tier1_decisions row (for accuracy tracking) and a tier1_training_examples
+    per config.TIER1_MODEL_ENABLED and the two asymmetric confidence
+    thresholds (see Tier1Decision.is_confident). Always logs a
+    tier1_decisions row (for accuracy tracking) and a tier1_training_examples
     row whenever a genuine Claude decision was made (for future fine-tuning)."""
     if not config.TIER1_MODEL_ENABLED:
         result = _decide_with_claude(job, db_path=db_path, client=client)
