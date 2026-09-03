@@ -149,4 +149,79 @@ def test_generate_draft_short_note_uses_a_distinctly_different_system_prompt(moc
     assert short_note_system_text != full_letter_system_text
     assert "40-70 words" in short_note_system_text
     assert "200 characters" in short_note_system_text
-    assert "200-300 words" in full_letter_system_text
+    assert "100-150 words" in full_letter_system_text
+    assert "2-3 concrete, specific details" in short_note_system_text
+    assert "2-3 concrete, specific details" in full_letter_system_text
+
+
+def test_generate_cover_letter_regenerates_when_over_length_target(mocker):
+    mocker.patch(
+        "jobfinder.ai.cover_letter.get_or_parse_resume",
+        return_value={"raw_text": "Experienced Python developer."},
+    )
+    mocker.patch("jobfinder.ai.cover_letter._load_style_reference", return_value="casual style")
+    overlong_letter = " ".join(["word"] * 200)  # well over the 150-word full_letter target
+    draft_spy = mocker.patch(
+        "jobfinder.ai.cover_letter._generate_draft",
+        side_effect=["overlong draft", "shortened draft"],
+    )
+    mocker.patch(
+        "jobfinder.ai.cover_letter._fact_check",
+        side_effect=[(overlong_letter, []), ("Shortened final letter.", [])],
+    )
+
+    final_letter, issues = cover_letter.generate_cover_letter(
+        _job(), ResumeVariant.FULLSTACK, client=object()
+    )
+
+    assert final_letter == "Shortened final letter."
+    assert draft_spy.call_count == 2
+    second_call_kwargs = draft_spy.call_args_list[1].kwargs
+    assert second_call_kwargs["previous_letter"] == overlong_letter
+    assert "150 words" in second_call_kwargs["revision_feedback"]
+
+
+def test_generate_cover_letter_does_not_regenerate_when_within_length_target(mocker):
+    mocker.patch(
+        "jobfinder.ai.cover_letter.get_or_parse_resume",
+        return_value={"raw_text": "Experienced Python developer."},
+    )
+    mocker.patch("jobfinder.ai.cover_letter._load_style_reference", return_value="casual style")
+    draft_spy = mocker.patch("jobfinder.ai.cover_letter._generate_draft", return_value="Draft letter.")
+    mocker.patch(
+        "jobfinder.ai.cover_letter._fact_check", return_value=("A concise, on-target letter.", [])
+    )
+
+    final_letter, issues = cover_letter.generate_cover_letter(
+        _job(), ResumeVariant.FULLSTACK, client=object()
+    )
+
+    assert final_letter == "A concise, on-target letter."
+    draft_spy.assert_called_once()
+
+
+def test_exceeds_length_target_full_letter_word_count():
+    within = " ".join(["word"] * 150)
+    over = " ".join(["word"] * 200)  # > 150 * 1.15
+
+    assert not cover_letter._exceeds_length_target(within, CoverLetterRequirement.FULL_LETTER, None)
+    assert cover_letter._exceeds_length_target(over, CoverLetterRequirement.FULL_LETTER, None)
+
+
+def test_exceeds_length_target_short_note_uses_char_limit_when_given():
+    text = "x" * 100
+
+    assert not cover_letter._exceeds_length_target(text, CoverLetterRequirement.SHORT_NOTE, 100)
+    assert cover_letter._exceeds_length_target(text, CoverLetterRequirement.SHORT_NOTE, 50)
+
+
+def test_length_target_description_uses_char_limit_for_short_note_when_known():
+    assert cover_letter._length_target_description(CoverLetterRequirement.SHORT_NOTE, 200) == (
+        "under 200 characters"
+    )
+    assert cover_letter._length_target_description(CoverLetterRequirement.SHORT_NOTE, None) == (
+        "under 70 words"
+    )
+    assert cover_letter._length_target_description(CoverLetterRequirement.FULL_LETTER, None) == (
+        "under 150 words"
+    )
