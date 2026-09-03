@@ -132,6 +132,30 @@ def test_run_apply_loop_returns_stuck_on_explicit_finish(mocker):
     assert status == ApplicationStatus.STUCK
 
 
+def test_run_apply_loop_logs_mismatch_when_reported_field_disagrees(mocker):
+    page = FakePage([])
+    application = _application()  # defaults to FULL_LETTER
+    response = SimpleNamespace(
+        content=[
+            _tool_use(
+                "finish",
+                {"status": "submitted", "note": "done", "cover_letter_field_found": "short_field"},
+                id_="t1",
+            )
+        ]
+    )
+    mocker.patch(
+        "jobfinder.local.browser_apply_fallback.create_message_with_retry",
+        return_value=response,
+    )
+
+    status = fallback.run_apply_loop(page, application, _job(), client=object())
+
+    assert status == ApplicationStatus.SENT
+    events = [entry["event"] for entry in application.apply_log]
+    assert "cover_letter_classification_mismatch" in events
+
+
 def test_run_apply_loop_returns_stuck_when_no_tool_calls(mocker):
     page = FakePage([])
     response = SimpleNamespace(content=[SimpleNamespace(type="text", text="I'm not sure what to do.")])

@@ -148,3 +148,27 @@ def test_run_easy_apply_loop_exhausts_max_steps(mocker):
     status = linkedin_apply.run_easy_apply_loop(page, _application(), _job(), client=object(), max_steps=2)
 
     assert status == ApplicationStatus.STUCK
+
+
+def test_run_easy_apply_loop_logs_mismatch_when_reported_field_disagrees(mocker):
+    page = FakePage([])
+    application = _application()  # defaults to FULL_LETTER
+    response = SimpleNamespace(
+        content=[
+            _tool_use(
+                "finish",
+                {"status": "ready_for_submit", "note": "done", "cover_letter_field_found": "no_field"},
+                id_="t1",
+            )
+        ]
+    )
+    mocker.patch(
+        "jobfinder.local.browser_apply_linkedin.create_message_with_retry",
+        return_value=response,
+    )
+
+    status = linkedin_apply.run_easy_apply_loop(page, application, _job(), client=object())
+
+    assert status == ApplicationStatus.AWAITING_MY_CLICK
+    events = [entry["event"] for entry in application.apply_log]
+    assert "cover_letter_classification_mismatch" in events

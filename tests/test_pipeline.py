@@ -1,6 +1,13 @@
 from jobfinder.ai.tier0_filter import Tier0Result
 from jobfinder.db import store
-from jobfinder.db.models import ApplicationStatus, ApplyMethod, JobPosting, ResumeVariant
+from jobfinder.db.models import (
+    Application,
+    ApplicationStatus,
+    ApplyMethod,
+    CoverLetterRequirement,
+    JobPosting,
+    ResumeVariant,
+)
 from jobfinder import pipeline, config
 
 
@@ -191,3 +198,95 @@ def test_process_revision_request_regenerates_and_resends(tmp_path, mocker):
     reloaded = store.get_application(result.id, db_path=db_path)
     events = [entry["event"] for entry in reloaded.apply_log]
     assert "revision_applied" in events
+
+
+def test_process_new_posting_sets_cover_letter_requirement_from_classification(tmp_path, mocker):
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+
+    mocker.patch.object(config, "TIER1_MODEL_ENABLED", False)
+    mocker.patch(
+        "jobfinder.pipeline.tier0_filter.score_posting",
+        return_value=Tier0Result(score=0.9, resume_hint=ResumeVariant.FULLSTACK),
+    )
+    mocker.patch("jobfinder.ai.relevance.is_relevant", return_value=(True, 0.9, "great fit"))
+    mocker.patch(
+        "jobfinder.ai.resume_selector.select_resume",
+        return_value=(ResumeVariant.FULLSTACK, "keyword match"),
+    )
+    mocker.patch(
+        "jobfinder.pipeline.cover_letter_requirement.classify_for_posting",
+        return_value=(CoverLetterRequirement.SHORT_NOTE, 200),
+    )
+    mocker.patch(
+        "jobfinder.pipeline.notify.send_stage_a_request",
+        side_effect=lambda service, app, job, db_path=None: app,
+    )
+
+    result = pipeline.process_new_posting(job, gmail_service=object(), db_path=db_path)
+
+    assert result.cover_letter_requirement == CoverLetterRequirement.SHORT_NOTE
+    assert result.cover_letter_char_limit == 200
+
+
+def test_process_stage_a_approval_skips_generation_when_no_letter_needed(tmp_path, mocker):
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+    application = Application(
+        job_posting_id=job.id,
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_choice_reason="keyword match",
+        status=ApplicationStatus.PENDING_STAGE_A_APPROVAL,
+        relevance_score=0.9,
+        cover_letter_requirement=CoverLetterRequirement.NONE,
+    )
+    application = store.insert_application(application, db_path)
+
+    cover_letter_spy = mocker.patch("jobfinder.pipeline.cover_letter_module.generate_cover_letter")
+    notify_spy = mocker.patch(
+        "jobfinder.pipeline.notify.send_stage_b_no_letter_request",
+        side_effect=lambda service, app, job, db_path=None: app,
+    )
+
+    result = pipeline.process_stage_a_approval(application, job, gmail_service=object(), db_path=db_path)
+
+    assert result.cover_letter is None
+    cover_letter_spy.assert_not_called()
+    notify_spy.assert_called_once()
+
+    reloaded = store.get_application(result.id, db_path=db_path)
+    events = [entry["event"] for entry in reloaded.apply_log]
+    assert "cover_letter_skipped" in events
+
+
+def test_process_stage_a_approval_passes_requirement_and_char_limit_for_short_note(tmp_path, mocker):
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+    application = Application(
+        job_posting_id=job.id,
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_choice_reason="keyword match",
+        status=ApplicationStatus.PENDING_STAGE_A_APPROVAL,
+        relevance_score=0.9,
+        cover_letter_requirement=CoverLetterRequirement.SHORT_NOTE,
+        cover_letter_char_limit=150,
+    )
+    application = store.insert_application(application, db_path)
+
+    cover_letter_spy = mocker.patch(
+        "jobfinder.pipeline.cover_letter_module.generate_cover_letter",
+        return_value=("Short note.", []),
+    )
+    mocker.patch(
+        "jobfinder.pipeline.notify.send_approval_request",
+        side_effect=lambda service, app, job, db_path=None: app,
+    )
+
+    pipeline.process_stage_a_approval(application, job, gmail_service=object(), db_path=db_path)
+
+    cover_letter_spy.assert_called_once()
+    assert cover_letter_spy.call_args.kwargs["requirement"] == CoverLetterRequirement.SHORT_NOTE
+    assert cover_letter_spy.call_args.kwargs["char_limit"] == 150

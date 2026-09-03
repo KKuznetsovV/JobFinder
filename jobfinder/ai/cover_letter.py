@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from jobfinder import config
 from jobfinder.ai.client import create_message_with_retry, get_client
-from jobfinder.db.models import JobPosting, ResumeVariant
+from jobfinder.db.models import CoverLetterRequirement, JobPosting, ResumeVariant
 from jobfinder.resume.cache import get_or_parse_resume
 
 _FACT_CHECK_TOOL = {
@@ -60,6 +60,8 @@ def _generate_draft(
     client,
     revision_feedback: str | None = None,
     previous_letter: str | None = None,
+    requirement: CoverLetterRequirement = CoverLetterRequirement.FULL_LETTER,
+    char_limit: int | None = None,
 ) -> str:
     if revision_feedback and previous_letter:
         user_content = (
@@ -79,6 +81,19 @@ def _generate_draft(
             f"Description: {job.description}"
         )
 
+    if requirement == CoverLetterRequirement.SHORT_NOTE:
+        length_instruction = (
+            "Write a SHORT note, not a full cover letter - one or two sentences, "
+            "roughly 40-70 words. No greeting or sign-off: this goes directly into "
+            "a small inline application-form text box, not an email."
+        )
+        if char_limit:
+            length_instruction += f" Stay under {char_limit} characters, no exceptions."
+        sign_off_instruction = ""
+    else:
+        length_instruction = "Write roughly 200-300 words."
+        sign_off_instruction = f" Sign the letter as '{config.APPLICANT_NAME}'."
+
     message = create_message_with_retry(
         client,
         model=config.MODEL_ID,
@@ -90,10 +105,9 @@ def _generate_draft(
                     "You write cover letters for a job applicant. Ground every claim "
                     "strictly in the resume text provided - never invent skills, "
                     "employers, dates, or achievements not present in the resume. "
-                    "Write roughly 200-300 words. Match the tone/register of the "
+                    f"{length_instruction} Match the tone/register of the "
                     "provided style reference where reasonable, but keep it "
-                    "professional enough for a cover letter. "
-                    f"Sign the letter as '{config.APPLICANT_NAME}'."
+                    f"professional enough for a cover letter.{sign_off_instruction}"
                 ),
                 "cache_control": {"type": "ephemeral"},
             },
@@ -154,12 +168,16 @@ def generate_cover_letter(
     client=None,
     revision_feedback: str | None = None,
     previous_letter: str | None = None,
+    requirement: CoverLetterRequirement = CoverLetterRequirement.FULL_LETTER,
+    char_limit: int | None = None,
 ) -> tuple[str, list[str]]:
     """Return (final_cover_letter, fact_check_issues). fact_check_issues is
     empty if the draft was approved as-is.
 
     Pass `revision_feedback` + `previous_letter` to revise an existing letter
-    per the user's feedback instead of writing a fresh draft.
+    per the user's feedback instead of writing a fresh draft. Pass
+    `requirement`/`char_limit` (see `jobfinder.db.models.CoverLetterRequirement`)
+    to target a short inline-form note instead of a full letter.
     """
     if client is None:
         client = get_client()
@@ -174,6 +192,8 @@ def generate_cover_letter(
         client,
         revision_feedback=revision_feedback,
         previous_letter=previous_letter,
+        requirement=requirement,
+        char_limit=char_limit,
     )
     final_letter, issues = _fact_check(draft, resume, client)
     return final_letter, issues

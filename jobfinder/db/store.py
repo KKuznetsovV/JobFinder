@@ -17,6 +17,7 @@ from jobfinder.db.models import (
     Application,
     ApplicationStatus,
     ApplyMethod,
+    CoverLetterRequirement,
     JobPosting,
     ResumeVariant,
     Tier1DecisionLog,
@@ -42,12 +43,13 @@ def init_db(db_path: Path | str | None = None) -> None:
 
     Also migrates a pre-existing `applications` table in place if it predates
     columns added since (tier0_score/tier0_resume_hint, then
-    stage_a_approved_at/stage_a_revision_count) - old rows are preserved,
-    missing columns come back NULL/default.
+    stage_a_approved_at/stage_a_revision_count, then
+    cover_letter_requirement/cover_letter_char_limit) - old rows are
+    preserved, missing columns come back NULL/default.
     """
     with _connect(db_path) as conn:
         old_columns = _existing_application_columns(conn)
-        needs_migration = bool(old_columns) and "stage_a_revision_count" not in old_columns
+        needs_migration = bool(old_columns) and "cover_letter_requirement" not in old_columns
         if needs_migration:
             conn.execute("ALTER TABLE applications RENAME TO applications_pre_migration")
         conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
@@ -113,6 +115,8 @@ def _row_to_application(row: sqlite3.Row) -> Application:
         tier0_resume_hint=ResumeVariant(row["tier0_resume_hint"]) if row["tier0_resume_hint"] else None,
         stage_a_approved_at=row["stage_a_approved_at"],
         stage_a_revision_count=row["stage_a_revision_count"],
+        cover_letter_requirement=CoverLetterRequirement(row["cover_letter_requirement"]),
+        cover_letter_char_limit=row["cover_letter_char_limit"],
     )
 
 
@@ -173,8 +177,9 @@ def insert_application(app: Application, db_path: Path | str | None = None) -> A
                 (job_posting_id, resume_variant, resume_choice_reason, cover_letter,
                  status, relevance_score, gmail_thread_id, gmail_last_message_id,
                  revision_count, apply_log, created_at, updated_at,
-                 tier0_score, tier0_resume_hint, stage_a_approved_at, stage_a_revision_count)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 tier0_score, tier0_resume_hint, stage_a_approved_at, stage_a_revision_count,
+                 cover_letter_requirement, cover_letter_char_limit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 app.job_posting_id,
@@ -193,6 +198,8 @@ def insert_application(app: Application, db_path: Path | str | None = None) -> A
                 app.tier0_resume_hint.value if app.tier0_resume_hint else None,
                 app.stage_a_approved_at,
                 app.stage_a_revision_count,
+                app.cover_letter_requirement.value,
+                app.cover_letter_char_limit,
             ),
         )
         app.id = cur.lastrowid
@@ -243,7 +250,8 @@ def update_application(app: Application, db_path: Path | str | None = None) -> N
                 status = ?, relevance_score = ?, gmail_thread_id = ?,
                 gmail_last_message_id = ?, revision_count = ?, apply_log = ?,
                 updated_at = ?, tier0_score = ?, tier0_resume_hint = ?,
-                stage_a_approved_at = ?, stage_a_revision_count = ?
+                stage_a_approved_at = ?, stage_a_revision_count = ?,
+                cover_letter_requirement = ?, cover_letter_char_limit = ?
             WHERE id = ?
             """,
             (
@@ -261,6 +269,8 @@ def update_application(app: Application, db_path: Path | str | None = None) -> N
                 app.tier0_resume_hint.value if app.tier0_resume_hint else None,
                 app.stage_a_approved_at,
                 app.stage_a_revision_count,
+                app.cover_letter_requirement.value,
+                app.cover_letter_char_limit,
                 app.id,
             ),
         )

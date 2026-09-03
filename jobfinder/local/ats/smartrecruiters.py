@@ -6,12 +6,15 @@ form structure.
 from __future__ import annotations
 
 from jobfinder import config
-from jobfinder.db.models import Application, JobPosting
+from jobfinder.db.models import Application, CoverLetterRequirement, JobPosting
 from jobfinder.local.ats.base import ATSAdapter, fill_if_present, require, resume_file_for, split_applicant_name
 
 
 class SmartRecruitersAdapter(ATSAdapter):
     name = "smartrecruiters"
+    # SmartRecruiters' default form has a dedicated coverLetter textarea
+    # that accepts a full pasted letter.
+    cover_letter_requirement = CoverLetterRequirement.FULL_LETTER
 
     @staticmethod
     def matches(url: str) -> bool:

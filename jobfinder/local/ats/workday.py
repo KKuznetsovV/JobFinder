@@ -13,12 +13,16 @@ of risking a wrong/incomplete auto-submission.
 from __future__ import annotations
 
 from jobfinder import config
-from jobfinder.db.models import Application, JobPosting
+from jobfinder.db.models import Application, CoverLetterRequirement, JobPosting
 from jobfinder.local.ats.base import ATSAdapter, ATSFormError, fill_if_present, require, split_applicant_name
 
 
 class WorkdayAdapter(ATSAdapter):
     name = "workday"
+    # Workday's later wizard steps commonly include an optional Resume/Cover
+    # Letter file-upload question; this adapter never reaches it (see below),
+    # but classify conservatively as a full letter rather than guessing none.
+    cover_letter_requirement = CoverLetterRequirement.FULL_LETTER
 
     @staticmethod
     def matches(url: str) -> bool:
