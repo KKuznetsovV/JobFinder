@@ -120,7 +120,7 @@ run on the machine with the seeded Chrome profile.
 pytest -q
 ```
 
-139 tests as of this writing, covering resume parsing, Gmail OAuth/client,
+147 tests as of this writing, covering resume parsing, Gmail OAuth/client,
 job sources, scraping utilities, the local embedding pre-filter, the
 Claude-backed relevance/resume/cover-letter/approval-reply modules (both
 approval stages), the local apply agent, ATS adapters, both
@@ -163,8 +163,15 @@ How it works (`jobfinder/ai/tier1_classifier.py`):
 
 - A small LoRA-fine-tuned Qwen2.5-1.5B-Instruct model (quantized to GGUF,
   served locally via `llama-cpp-python`, no network call) predicts both
-  decisions - relevant yes/no and which resume fits - along with a
-  confidence score for each.
+  decisions - relevant yes/no and which resume fits.
+- Confidence for each decision is derived at inference time from the model's
+  own output-token probabilities (via llama.cpp's `logprobs`), not a number
+  the model was trained to emit - round 1 had the model output a
+  "confidence" field directly, but training labels always used a small set
+  of fixed placeholder values, so the model just learned to reproduce those
+  constants (see "Round 2" below). `resume_confidence` only gates routing
+  when the model predicted `relevant=True`, since `resume_variant` is never
+  acted on downstream for a rejected posting.
 - If both confidences are >= `TIER1_CONFIDENCE_MIN`, the local prediction is
   used directly (no Claude call). Otherwise (or if the model errors, or
   `TIER1_MODEL_ENABLED=false`, or no model file exists yet) it falls back to
@@ -194,8 +201,9 @@ scripts/tier1/
   config.yaml                   # base model, LoRA + training hyperparameters
   train.py                      # Unsloth + TRL LoRA fine-tuning
   quantize.py                   # GGUF quantization (q4_k_m)
-  evaluate.py                   # held-out eval accuracy (reuses stored labels,
-                                 # no live Claude calls)
+  evaluate.py                   # held-out eval accuracy, confusion matrices,
+                                 # and confidence-calibration table (reuses
+                                 # stored labels, no live Claude calls)
 ```
 
 Running the full pipeline requires installing
@@ -203,27 +211,83 @@ Running the full pipeline requires installing
 GPU strongly recommended) and will make real, paid Claude API calls during
 `label_examples.py`. See each script's module docstring for exact usage.
 
-**First fine-tuning round (completed, model not committed to git - see
-`models/` in `.gitignore`)**: 655 labeled examples (400 synthetic + 250
-resume-keyword-biased synthetic, labeled via real `relevance.is_relevant`/
-`resume_selector.select_resume` calls), split 502/55/98 train/val/eval,
-3 epochs LoRA fine-tuning of `unsloth/Qwen2.5-1.5B-Instruct-bnb-4bit` on an
-RTX 5060 Laptop GPU (~9 min), quantized to q4_k_m (~940MB). Held-out eval
-results: **77.6% relevance accuracy, 66.7% resume-variant accuracy (among
-relevant examples), 77.6% combined accuracy** on the 98-example eval set.
+**Round 1 (655 examples, ~21%/79% relevant/not split)**: 400 synthetic +
+250 resume-keyword-biased synthetic postings, split 502/55/98 train/val/eval,
+3 epochs LoRA fine-tuning on an RTX 5060 Laptop GPU (~9 min), quantized to
+q4_k_m (~940MB).
 
-Known limitation: the model's reported confidence values are not currently
-well-calibrated - training labels used fixed placeholder confidences (0.9-0.95
-for relevance, 0.5-0.9 for resume) rather than genuine per-example certainty,
-so the model has learned to reproduce those same near-constant values instead
-of a real uncertainty signal. This means `TIER1_CONFIDENCE_MIN` does not yet
-reliably gate low-quality predictions to Claude. **Recommendation: keep
-`TIER1_MODEL_ENABLED=false` until a future training round derives genuine
-calibrated confidence** (e.g. via sampling-based agreement or by asking the
-Claude teacher to report its own certainty during labeling) - the
-infrastructure (routing, spot-check logging, training-data accumulation) is
-in place and tested, but the shipped model is a first-pass proof of concept,
-not yet accurate/calibrated enough for unattended production use.
+| metric | round 1 |
+|---|---|
+| relevance accuracy | 77.6% |
+| majority-class baseline | 78.6% (**model was below baseline**) |
+| relevance confusion (expected relevant: TP / FN) | 0 / 21 |
+| relevance confusion (expected not relevant: FP / TN) | 1 / 76 |
+| resume-variant accuracy (relevant only) | 66.7% |
+| combined accuracy | 77.6% |
+
+The confusion matrix showed the round-1 model had collapsed to predicting
+"not relevant" almost universally (0 true positives out of 21 genuinely
+relevant eval examples) - it had learned the majority-class shortcut, not
+the actual decision boundary, on a training set that was ~79% one class.
+Confidence was also a near-constant placeholder (training labels used fixed
+values like 0.9/0.95 regardless of the actual example), so it reproduced
+those same numbers at inference time - useless for `TIER1_CONFIDENCE_MIN`
+routing.
+
+**Round 2 (`feature/tier1-retrain-v2`, 1355 examples, ~44.6%/55.4% relevant/
+not split)**: added 700 new synthetic postings deliberately biased toward
+the relevant class (junior/entry-level fullstack + PM postings using
+resume-aligned language), labeled only the new ones via Claude (reusing
+round 1's 655 existing labels), and rebuilt the split - keeping round 1's
+98 held-out eval postings intact for comparability (11 exact-content
+duplicates across the two synthetic batches also matched by input text and
+were pulled into eval alongside them, growing it to 109 examples; all 98
+original postings are still included). Also replaced the placeholder
+confidence with real logprob-derived confidence (see above) and fixed two
+bugs found along the way: `split_dataset.py` was hardcoding a fixed
+"confidence" in training labels regardless of the actual example, and
+`tier1_classifier.parse_completion` was discarding an otherwise-correct
+"not relevant" decision whenever the model emitted an out-of-schema
+`resume_variant` value like `"none"` (now defaults to a placeholder variant
+with zero confidence in that case, since resume_variant is never acted on
+for a rejected posting).
+
+| metric | round 1 | round 2 |
+|---|---|---|
+| relevance accuracy | 77.6% | **82.6%** |
+| majority-class baseline | 78.6% | 78.9% |
+| vs. baseline | below | **+3.7pts above** |
+| relevance confusion (expected relevant: TP / FN) | 0 / 21 | 4 / 19 |
+| relevance confusion (expected not relevant: FP / TN) | 1 / 76 | 0 / 86 |
+| resume-variant accuracy (relevant only) | 66.7% | 69.6% |
+| combined accuracy | 77.6% | 82.6% |
+| confidence calibration | not meaningful (near-constant) | monotonic - see below |
+
+Round 2's confidence-calibration table (accuracy by quartile of the routing
+confidence `is_confident()` actually gates on) now shows a real, monotonic
+relationship between confidence and correctness:
+
+| bucket | avg confidence | accuracy |
+|---|---|---|
+| Q1 (lowest) | 0.741 | 46.4% |
+| Q2 | 0.916 | 85.7% |
+| Q3 | 0.987 | 100% |
+| Q4 (highest) | 1.000 | 100% |
+
+**Judgment: not yet strong enough to enable `TIER1_MODEL_ENABLED`.** Round 2
+is genuine progress - it now beats the majority-class baseline (round 1
+didn't), zero false positives, and confidence is a real, calibrated signal
+that correlates with accuracy. But relevant-class recall is still weak (4/23,
+17.4%) - the model remains heavily biased toward predicting "not relevant,"
+just less severely than round 1 (0/21). With only 23 relevant examples in
+the eval set, these numbers are also fairly noisy. **Recommendation: keep
+`TIER1_MODEL_ENABLED=false`** and consider a round 3 that further improves
+relevant-class recall (e.g. more real production-logged examples once
+enough accumulate, an even larger/more diverse relevant-biased synthetic
+batch, or a recall-weighted training objective) before reconsidering enabling
+it - the confidence-routing infrastructure is now trustworthy (round 2's
+fix), so once relevance recall genuinely improves, low-confidence cases will
+correctly still fall back to Claude rather than being silently wrong.
 
 ## Project structure
 

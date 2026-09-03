@@ -49,18 +49,19 @@ def _best_guess_resume_variant(example) -> tuple[str, str]:
 def _example_to_record(example) -> dict:
     if example.resume_variant:
         resume_variant, resume_reason = example.resume_variant.value, example.resume_reason
-        resume_confidence = 0.9
     else:
         resume_variant, resume_reason = _best_guess_resume_variant(example)
-        resume_confidence = 0.5  # genuinely low confidence: no resume decision was ever made for this posting
 
+    # No confidence fields here: round 1 trained the model to emit a fixed
+    # placeholder confidence (0.9/0.95/0.5) regardless of the actual example,
+    # which it dutifully memorized - useless for TIER1_CONFIDENCE_MIN
+    # routing. Confidence is now derived at inference time from the model's
+    # real output-token probabilities (see jobfinder.ai.tier1_classifier).
     output = json.dumps(
         {
             "relevant": example.relevant,
-            "relevance_confidence": 0.95 if example.relevant else 0.9,
             "relevance_reason": example.relevance_reason,
             "resume_variant": resume_variant,
-            "resume_confidence": resume_confidence,
             "resume_reason": resume_reason,
         },
         ensure_ascii=False,
@@ -79,6 +80,11 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _load_fixed_eval_inputs(path: Path) -> set[str]:
+    records = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return {r["input"] for r in records}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--db", type=Path, default=config.DB_PATH)
@@ -86,6 +92,13 @@ def main() -> None:
     parser.add_argument("--eval-fraction", type=float, default=0.15)
     parser.add_argument("--val-fraction", type=float, default=0.10, help="Of the remaining (non-eval) examples.")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--fixed-eval-jsonl", type=Path, default=None,
+        help="Reuse an existing eval.jsonl's exact examples (matched by input text) as the eval "
+        "split, instead of re-shuffling a fresh one - keeps accuracy numbers comparable across "
+        "training rounds when new examples are added to the DB. Examples not found among the "
+        "current export are dropped with a warning.",
+    )
     args = parser.parse_args()
 
     examples = store.export_tier1_training_examples(db_path=args.db)
@@ -94,14 +107,33 @@ def main() -> None:
         sys.exit(1)
 
     rng = random.Random(args.seed)
-    rng.shuffle(examples)
 
-    eval_count = max(1, int(len(examples) * args.eval_fraction))
-    eval_examples = examples[:eval_count]
-    remaining = examples[eval_count:]
-    val_count = max(1, int(len(remaining) * args.val_fraction))
-    val_examples = remaining[:val_count]
-    train_examples = remaining[val_count:]
+    if args.fixed_eval_jsonl and args.fixed_eval_jsonl.exists():
+        fixed_inputs = _load_fixed_eval_inputs(args.fixed_eval_jsonl)
+        eval_examples = [
+            e for e in examples if build_input_text(e.title, e.company, e.description) in fixed_inputs
+        ]
+        remaining = [
+            e for e in examples if build_input_text(e.title, e.company, e.description) not in fixed_inputs
+        ]
+        if len(eval_examples) != len(fixed_inputs):
+            print(
+                f"WARNING: matched {len(eval_examples)}/{len(fixed_inputs)} fixed eval examples by "
+                "input text - some round-1 eval examples may no longer exist in the DB.",
+                file=sys.stderr,
+            )
+        rng.shuffle(remaining)
+        val_count = max(1, int(len(remaining) * args.val_fraction))
+        val_examples = remaining[:val_count]
+        train_examples = remaining[val_count:]
+    else:
+        rng.shuffle(examples)
+        eval_count = max(1, int(len(examples) * args.eval_fraction))
+        eval_examples = examples[:eval_count]
+        remaining = examples[eval_count:]
+        val_count = max(1, int(len(remaining) * args.val_fraction))
+        val_examples = remaining[:val_count]
+        train_examples = remaining[val_count:]
 
     _write_jsonl(args.out_dir / "train.jsonl", [_example_to_record(e) for e in train_examples])
     _write_jsonl(args.out_dir / "val.jsonl", [_example_to_record(e) for e in val_examples])

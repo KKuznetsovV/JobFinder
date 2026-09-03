@@ -31,6 +31,19 @@ TITLES = [
     "Marketing Coordinator", "Graphic Designer", "Warehouse Associate", "Executive Assistant",
 ]
 
+# Junior/entry-level titles for the two relevant buckets, closer to what the
+# actual candidate (a career-changer into tech, with a hospitality-management
+# background) would realistically be applying to - used when strong_match is
+# True, alongside the STRONG_MATCH_* snippet pools below.
+JUNIOR_TECH_TITLES = [
+    "Junior Software Engineer", "Associate Software Engineer", "Software Engineer I",
+    "Junior Full Stack Developer", "Entry-Level Web Developer", "Junior Backend Developer",
+]
+JUNIOR_PM_TITLES = [
+    "Assistant Restaurant Manager", "Shift Manager", "Associate Project Manager",
+    "Junior Project Coordinator", "Assistant Operations Manager", "Team Lead",
+]
+
 COMPANIES = [
     "Acme Corp", "Northwind Traders", "Globex", "Initech", "Umbrella Labs",
     "Stark Industries", "Wayne Enterprises", "Hooli", "Pied Piper", "Soylent Co",
@@ -77,22 +90,45 @@ UNRELATED_SNIPPETS = [
     "processing payroll and benefits administration",
 ]
 
+# Appended to strong-match postings to read like realistic junior/entry-level
+# listings rather than generic senior-sounding ones - the candidate is a
+# career-changer, so postings explicitly open to little experience or a
+# transition are the most plausible genuine matches.
+JUNIOR_TECH_QUALIFIERS = [
+    "0-2 years of professional experience is fine - we're happy to train the right person",
+    "recent bootcamp or CS-program graduates are encouraged to apply",
+    "this is an entry-level role with mentorship from senior engineers",
+    "prior professional software experience is a plus but not required for the right candidate",
+]
+JUNIOR_PM_QUALIFIERS = [
+    "candidates transitioning from hospitality, retail, or restaurant management are strongly encouraged to apply",
+    "we care more about your track record leading people and hitting targets than a specific industry background",
+    "this is a great fit for someone moving from operations/venue management into a corporate PM track",
+    "no formal PM certification required if you've managed a team, budget, or location before",
+]
+
 
 def _fullstack_description(rng: random.Random, strong_match: bool = False) -> str:
     pool = STRONG_MATCH_TECH_SNIPPETS if strong_match else TECH_SNIPPETS
-    return (
+    description = (
         f"We're looking for an engineer to build and maintain services using "
         f"{rng.choice(pool)}. You'll work closely with the team on "
         f"{rng.choice(pool)} and help scale our platform."
     )
+    if strong_match:
+        description += f" {rng.choice(JUNIOR_TECH_QUALIFIERS)}."
+    return description
 
 
 def _pm_description(rng: random.Random, strong_match: bool = False) -> str:
     pool = STRONG_MATCH_PM_SNIPPETS if strong_match else PM_SNIPPETS
-    return (
+    description = (
         f"We're looking for someone experienced in {rng.choice(pool)}. "
         f"You'll partner with engineering and design on {rng.choice(pool)}."
     )
+    if strong_match:
+        description += f" {rng.choice(JUNIOR_PM_QUALIFIERS)}."
+    return description
 
 
 def _unrelated_description(rng: random.Random) -> str:
@@ -102,21 +138,35 @@ def _unrelated_description(rng: random.Random) -> str:
     )
 
 
-def generate_posting(rng: random.Random, index: int, strong_match_fraction: float = 0.0) -> dict:
+def generate_posting(
+    rng: random.Random,
+    index: int,
+    strong_match_fraction: float = 0.0,
+    target_relevant_fraction: float | None = None,
+) -> dict:
     """Roughly a third each of: fullstack-flavored, PM-flavored, and clearly
     unrelated postings - gives the teacher-labeling step (and eventually the
     fine-tuned model) a mix of both positive classes plus negatives.
     `strong_match_fraction` biases the fullstack/PM buckets toward the
-    STRONG_MATCH_* snippet pools (closer resume keyword overlap), for
-    generating a supplemental batch when the default mix under-produces
-    the relevant class."""
-    bucket = rng.choice(["fullstack", "project_manager", "unrelated"])
+    STRONG_MATCH_* snippet pools (closer resume keyword overlap) and, when
+    picked, a junior/entry-level qualifier sentence - for generating a batch
+    deliberately skewed toward the relevant class, to fix training-set class
+    imbalance. `target_relevant_fraction`, if given, overrides the default
+    even 1/3-1/3-1/3 bucket split: that fraction of postings are split evenly
+    between fullstack/project_manager, and the rest are unrelated."""
+    if target_relevant_fraction is None:
+        bucket = rng.choice(["fullstack", "project_manager", "unrelated"])
+    elif rng.random() < target_relevant_fraction:
+        bucket = rng.choice(["fullstack", "project_manager"])
+    else:
+        bucket = "unrelated"
+
     strong_match = rng.random() < strong_match_fraction
     if bucket == "fullstack":
-        title = rng.choice(TITLES[:5])
+        title = rng.choice(JUNIOR_TECH_TITLES if strong_match else TITLES[:5])
         description = _fullstack_description(rng, strong_match=strong_match)
     elif bucket == "project_manager":
-        title = rng.choice(TITLES[5:9])
+        title = rng.choice(JUNIOR_PM_TITLES if strong_match else TITLES[5:9])
         description = _pm_description(rng, strong_match=strong_match)
     else:
         title = rng.choice(TITLES[9:])
@@ -139,13 +189,20 @@ def main() -> None:
         "--strong-match-fraction", type=float, default=0.0,
         help="Fraction of fullstack/PM postings biased toward closer resume-keyword overlap.",
     )
+    parser.add_argument(
+        "--target-relevant-fraction", type=float, default=None,
+        help="Override the default even 1/3-1/3-1/3 bucket split: this fraction of postings are "
+        "fullstack/project_manager (split evenly), the rest unrelated. Use with a high "
+        "--strong-match-fraction to deliberately generate a relevant-class-heavy supplemental batch.",
+    )
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as f:
         for i in range(args.count):
-            f.write(json.dumps(generate_posting(rng, i, args.strong_match_fraction), ensure_ascii=False) + "\n")
+            posting = generate_posting(rng, i, args.strong_match_fraction, args.target_relevant_fraction)
+            f.write(json.dumps(posting, ensure_ascii=False) + "\n")
 
     print(f"Wrote {args.count} synthetic postings to {args.out}", file=sys.stderr)
 
