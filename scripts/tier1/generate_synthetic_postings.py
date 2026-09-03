@@ -44,6 +44,27 @@ JUNIOR_PM_TITLES = [
     "Junior Project Coordinator", "Assistant Operations Manager", "Team Lead",
 ]
 
+# "Hard positive" titles: round 2's relevant postings all read as obviously
+# tech/PM-flavored (STRONG_MATCH_* pools + a junior qualifier sentence),
+# which is easy for the model to learn as a shallow keyword shortcut but
+# doesn't teach it to recognize genuinely-relevant postings that are worded
+# like something else - e.g. a support/QA title that's quietly doing
+# fullstack-adjacent work, or a retail/ops supervisor title that's quietly
+# doing the same budget/staff-leadership work as the PM resume. These share
+# surface vocabulary with the UNRELATED bucket (support tickets, shift
+# scheduling, inventory) rather than with the STRONG_MATCH pools, and are
+# meant to be genuinely harder for both the model and the Claude teacher to
+# call - round 2 had zero examples like this, and its relevant-class recall
+# (4/23) suggests it never learned to look past title/vocabulary shortcuts.
+HARD_POSITIVE_TECH_TITLES = [
+    "IT Support Specialist", "Technical Support Engineer", "QA Tester",
+    "Business Systems Analyst", "Junior Data Analyst", "Help Desk Analyst II",
+]
+HARD_POSITIVE_PM_TITLES = [
+    "Shift Lead", "Assistant Store Manager", "Night Shift Supervisor",
+    "Retail Operations Supervisor", "Front of House Supervisor", "Store Manager Trainee",
+]
+
 COMPANIES = [
     "Acme Corp", "Northwind Traders", "Globex", "Initech", "Umbrella Labs",
     "Stark Industries", "Wayne Enterprises", "Hooli", "Pied Piper", "Soylent Co",
@@ -88,6 +109,38 @@ UNRELATED_SNIPPETS = [
     "designing marketing collateral and social media graphics",
     "scheduling executive travel and managing calendars",
     "processing payroll and benefits administration",
+]
+
+# Hard-positive snippets deliberately read like generic support/ops/retail
+# work first, with the actual resume-relevant substance folded in almost as
+# an afterthought - mirroring how a real posting worded by a non-technical/
+# non-PM hiring manager might undersell a genuinely relevant role. Written to
+# still contain real overlap with the fullstack/PM resumes on file (scripting/
+# automation/dashboards for tech; budgets/staff leadership/P&L for PM), just
+# not phrased with the obvious buzzwords the STRONG_MATCH_* pools use.
+HARD_POSITIVE_TECH_SNIPPETS = [
+    "triaging support tickets, but the role has grown to include writing small Python scripts "
+    "to automate repetitive manual reporting tasks",
+    "answering internal help-desk requests, plus building and maintaining a few internal tools "
+    "and dashboards with Node.js and SQL",
+    "manual QA testing of the product, but you'll also write Selenium/JavaScript test automation "
+    "scripts to replace repetitive manual test runs",
+    "reviewing data entered by other teams and increasingly writing SQL queries and light "
+    "reporting automation to replace manual spreadsheet work",
+    "supporting internal business users, with a growing part of the job spent building simple "
+    "internal web tools and automating recurring data pulls",
+]
+HARD_POSITIVE_PM_SNIPPETS = [
+    "running the daily shift, including opening/closing procedures, cash reconciliation, and "
+    "training new hires on store standards",
+    "overseeing scheduling, inventory counts, and staff performance reviews for a busy retail "
+    "location",
+    "coordinating a small team overnight, handling vendor relationships, inventory ordering, "
+    "and shift-level budget tracking",
+    "managing day-to-day floor operations, resolving customer escalations, and owning "
+    "labor-cost and shrink targets for the location",
+    "supervising front-of-house staff, building weekly schedules, and reporting sales and "
+    "labor numbers up to the general manager",
 ]
 
 # Appended to strong-match postings to read like realistic junior/entry-level
@@ -138,11 +191,28 @@ def _unrelated_description(rng: random.Random) -> str:
     )
 
 
+def _hard_positive_fullstack_description(rng: random.Random) -> str:
+    return (
+        f"This role is primarily {rng.choice(HARD_POSITIVE_TECH_SNIPPETS)}. "
+        f"Over time you'll also be doing more of: {rng.choice(HARD_POSITIVE_TECH_SNIPPETS)}. "
+        f"{rng.choice(JUNIOR_TECH_QUALIFIERS)}."
+    )
+
+
+def _hard_positive_pm_description(rng: random.Random) -> str:
+    return (
+        f"This role is primarily {rng.choice(HARD_POSITIVE_PM_SNIPPETS)}. "
+        f"You'll also be responsible for {rng.choice(HARD_POSITIVE_PM_SNIPPETS)}. "
+        f"{rng.choice(JUNIOR_PM_QUALIFIERS)}."
+    )
+
+
 def generate_posting(
     rng: random.Random,
     index: int,
     strong_match_fraction: float = 0.0,
     target_relevant_fraction: float | None = None,
+    hard_positive_fraction: float = 0.0,
 ) -> dict:
     """Roughly a third each of: fullstack-flavored, PM-flavored, and clearly
     unrelated postings - gives the teacher-labeling step (and eventually the
@@ -153,7 +223,12 @@ def generate_posting(
     deliberately skewed toward the relevant class, to fix training-set class
     imbalance. `target_relevant_fraction`, if given, overrides the default
     even 1/3-1/3-1/3 bucket split: that fraction of postings are split evenly
-    between fullstack/project_manager, and the rest are unrelated."""
+    between fullstack/project_manager, and the rest are unrelated.
+    `hard_positive_fraction` replaces that fraction of fullstack/project_manager
+    postings with the HARD_POSITIVE_* pools instead of STRONG_MATCH_*/plain
+    ones - support/QA/retail-ops-worded postings that should still genuinely
+    match a resume, meant to teach recall beyond an obvious-title/buzzword
+    shortcut (see HARD_POSITIVE_TECH_TITLES's comment for why this matters)."""
     if target_relevant_fraction is None:
         bucket = rng.choice(["fullstack", "project_manager", "unrelated"])
     elif rng.random() < target_relevant_fraction:
@@ -162,12 +237,21 @@ def generate_posting(
         bucket = "unrelated"
 
     strong_match = rng.random() < strong_match_fraction
+    hard_positive = bucket in ("fullstack", "project_manager") and rng.random() < hard_positive_fraction
     if bucket == "fullstack":
-        title = rng.choice(JUNIOR_TECH_TITLES if strong_match else TITLES[:5])
-        description = _fullstack_description(rng, strong_match=strong_match)
+        if hard_positive:
+            title = rng.choice(HARD_POSITIVE_TECH_TITLES)
+            description = _hard_positive_fullstack_description(rng)
+        else:
+            title = rng.choice(JUNIOR_TECH_TITLES if strong_match else TITLES[:5])
+            description = _fullstack_description(rng, strong_match=strong_match)
     elif bucket == "project_manager":
-        title = rng.choice(JUNIOR_PM_TITLES if strong_match else TITLES[5:9])
-        description = _pm_description(rng, strong_match=strong_match)
+        if hard_positive:
+            title = rng.choice(HARD_POSITIVE_PM_TITLES)
+            description = _hard_positive_pm_description(rng)
+        else:
+            title = rng.choice(JUNIOR_PM_TITLES if strong_match else TITLES[5:9])
+            description = _pm_description(rng, strong_match=strong_match)
     else:
         title = rng.choice(TITLES[9:])
         description = _unrelated_description(rng)
@@ -195,13 +279,22 @@ def main() -> None:
         "fullstack/project_manager (split evenly), the rest unrelated. Use with a high "
         "--strong-match-fraction to deliberately generate a relevant-class-heavy supplemental batch.",
     )
+    parser.add_argument(
+        "--hard-positive-fraction", type=float, default=0.0,
+        help="Fraction of fullstack/project_manager postings that use the HARD_POSITIVE_* pools "
+        "(support/QA/retail-ops-worded postings that should still genuinely match a resume) "
+        "instead of the STRONG_MATCH_*/plain pools - targets relevant-class recall on "
+        "borderline/non-obvious postings rather than just adding more clearly-relevant ones.",
+    )
     args = parser.parse_args()
 
     rng = random.Random(args.seed)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("w", encoding="utf-8") as f:
         for i in range(args.count):
-            posting = generate_posting(rng, i, args.strong_match_fraction, args.target_relevant_fraction)
+            posting = generate_posting(
+                rng, i, args.strong_match_fraction, args.target_relevant_fraction, args.hard_positive_fraction
+            )
             f.write(json.dumps(posting, ensure_ascii=False) + "\n")
 
     print(f"Wrote {args.count} synthetic postings to {args.out}", file=sys.stderr)

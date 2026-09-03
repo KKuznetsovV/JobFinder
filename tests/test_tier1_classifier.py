@@ -86,7 +86,7 @@ def test_low_confidence_falls_back_to_claude(tmp_path, mocker):
     store.init_db(db_path)
     job = _job(db_path)
     mocker.patch.object(config, "TIER1_MODEL_ENABLED", True)
-    mocker.patch.object(config, "TIER1_CONFIDENCE_MIN", 0.85)
+    mocker.patch.object(config, "TIER1_RELEVANT_CONFIDENCE_MIN", 0.85)
     low_confidence = Tier1Decision(
         relevant=True,
         relevance_confidence=0.5,  # below threshold
@@ -345,7 +345,7 @@ def test_classify_derives_confidence_from_token_logprobs():
     expected_high_confidence = math.exp(-0.01)
     assert decision.relevance_confidence == pytest.approx(expected_high_confidence, rel=1e-3)
     assert decision.resume_confidence == pytest.approx(expected_high_confidence, rel=1e-3)
-    assert decision.is_confident(threshold=0.95) is True
+    assert decision.is_confident(relevant_threshold=0.95) is True
 
 
 def test_classify_low_token_confidence_on_relevant_value_lowers_only_that_confidence():
@@ -370,7 +370,7 @@ def test_classify_low_token_confidence_on_relevant_value_lowers_only_that_confid
     assert decision is not None
     assert decision.relevance_confidence == pytest.approx(math.exp(-3.0), rel=1e-3)
     assert decision.resume_confidence == pytest.approx(math.exp(-0.01), rel=1e-3)
-    assert decision.is_confident(threshold=0.85) is False
+    assert decision.is_confident(relevant_threshold=0.85) is False
 
 
 def test_classify_confidence_is_zero_when_logprobs_unavailable():
@@ -435,7 +435,7 @@ def test_is_confident_ignores_resume_confidence_when_not_relevant():
         resume_reason="",
     )
 
-    assert decision.is_confident(threshold=0.85) is True
+    assert decision.is_confident(not_relevant_threshold=0.85) is True
 
 
 def test_is_confident_still_requires_resume_confidence_when_relevant():
@@ -448,7 +448,128 @@ def test_is_confident_still_requires_resume_confidence_when_relevant():
         resume_reason="",
     )
 
-    assert decision.is_confident(threshold=0.85) is False
+    assert decision.is_confident(relevant_threshold=0.85) is False
+
+
+def test_is_confident_uses_not_relevant_threshold_for_not_relevant_predictions(mocker):
+    """A confidence between the two thresholds should be trusted or not
+    purely based on which branch it's in - proves the two thresholds are
+    applied independently, not just one overriding the other."""
+    mocker.patch.object(config, "TIER1_NOT_RELEVANT_CONFIDENCE_MIN", 0.95)
+    mocker.patch.object(config, "TIER1_RELEVANT_CONFIDENCE_MIN", 0.60)
+    decision = Tier1Decision(
+        relevant=False,
+        relevance_confidence=0.70,  # above the relevant threshold, below the not-relevant one
+        relevance_reason="Probably not a fit.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.0,
+        resume_reason="",
+    )
+
+    assert decision.is_confident() is False
+
+
+def test_is_confident_uses_relevant_threshold_for_relevant_predictions(mocker):
+    """Same confidence (0.70) as above, but for relevant=True: trusted here
+    because the relevant branch gates on the (lower) relevant threshold, not
+    the not-relevant one - this is the whole point of asymmetric routing."""
+    mocker.patch.object(config, "TIER1_NOT_RELEVANT_CONFIDENCE_MIN", 0.95)
+    mocker.patch.object(config, "TIER1_RELEVANT_CONFIDENCE_MIN", 0.60)
+    decision = Tier1Decision(
+        relevant=True,
+        relevance_confidence=0.70,
+        relevance_reason="Good match.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.70,
+        resume_reason="Backend-heavy.",
+    )
+
+    assert decision.is_confident() is True
+
+
+def test_is_confident_not_relevant_just_below_its_own_threshold(mocker):
+    mocker.patch.object(config, "TIER1_NOT_RELEVANT_CONFIDENCE_MIN", 0.95)
+    decision = Tier1Decision(
+        relevant=False,
+        relevance_confidence=0.94,
+        relevance_reason="Probably not a fit.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.0,
+        resume_reason="",
+    )
+
+    assert decision.is_confident() is False
+
+
+def test_is_confident_not_relevant_at_its_own_threshold(mocker):
+    mocker.patch.object(config, "TIER1_NOT_RELEVANT_CONFIDENCE_MIN", 0.95)
+    decision = Tier1Decision(
+        relevant=False,
+        relevance_confidence=0.95,
+        relevance_reason="Probably not a fit.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.0,
+        resume_reason="",
+    )
+
+    assert decision.is_confident() is True
+
+
+def test_decide_asymmetric_thresholds_relevant_trusted_below_not_relevant_threshold(tmp_path, mocker):
+    """End-to-end through decide(): a confidence that would fail the
+    not-relevant threshold is still enough to trust a relevant prediction,
+    since decide() routes relevant=True through the (lower) relevant
+    threshold, not the not-relevant one."""
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+    mocker.patch.object(config, "TIER1_MODEL_ENABLED", True)
+    mocker.patch.object(config, "TIER1_AGREEMENT_CHECK_RATE", 0.0)
+    mocker.patch.object(config, "TIER1_NOT_RELEVANT_CONFIDENCE_MIN", 0.95)
+    mocker.patch.object(config, "TIER1_RELEVANT_CONFIDENCE_MIN", 0.60)
+    decision = Tier1Decision(
+        relevant=True,
+        relevance_confidence=0.70,
+        relevance_reason="Good match.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.70,
+        resume_reason="Backend-heavy.",
+    )
+    mocker.patch("jobfinder.ai.tier1_classifier.classify", return_value=decision)
+    relevance_spy = mocker.patch("jobfinder.ai.relevance.is_relevant")
+
+    result = tier1_classifier.decide(job, db_path=db_path)
+
+    relevance_spy.assert_not_called()
+    assert result.path == "tier1"
+
+
+def test_decide_asymmetric_thresholds_not_relevant_falls_back_below_its_threshold(tmp_path, mocker):
+    """Same confidence (0.70) as above, but relevant=False: falls back to
+    Claude because the not-relevant branch requires the higher not-relevant
+    threshold - proves the two thresholds aren't interchangeable."""
+    db_path = tmp_path / "test.db"
+    store.init_db(db_path)
+    job = _job(db_path)
+    mocker.patch.object(config, "TIER1_MODEL_ENABLED", True)
+    mocker.patch.object(config, "TIER1_NOT_RELEVANT_CONFIDENCE_MIN", 0.95)
+    mocker.patch.object(config, "TIER1_RELEVANT_CONFIDENCE_MIN", 0.60)
+    decision = Tier1Decision(
+        relevant=False,
+        relevance_confidence=0.70,
+        relevance_reason="Probably not a fit.",
+        resume_variant=ResumeVariant.FULLSTACK,
+        resume_confidence=0.0,
+        resume_reason="",
+    )
+    mocker.patch("jobfinder.ai.tier1_classifier.classify", return_value=decision)
+    mocker.patch("jobfinder.ai.relevance.is_relevant", return_value=(False, 0.2, "claude says no"))
+    resume_spy = mocker.patch("jobfinder.ai.resume_selector.select_resume")
+
+    result = tier1_classifier.decide(job, db_path=db_path)
+
+    resume_spy.assert_not_called()
+    assert result.path == "claude_fallback"
 
 
 def test_classify_rejects_out_of_schema_resume_variant_when_relevant():

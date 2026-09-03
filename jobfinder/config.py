@@ -68,18 +68,42 @@ TIER0_MODEL_NAME = os.environ.get("TIER0_MODEL_NAME", "all-MiniLM-L6-v2")
 # looks wrong): false means every posting goes through the pre-tier1
 # all-Claude path, identical to before this feature existed.
 TIER1_MODEL_ENABLED = os.environ.get("TIER1_MODEL_ENABLED", "false").lower() == "true"
-# 0-1 confidence cutoff, applied to BOTH the relevance and resume-selection
-# decisions; below this on either, fall back to the real Claude calls for
-# that posting instead of trusting the local model. Start conservative -
-# retune once jobfinder.db.store.summarize_tier1_decisions() shows the
-# model's real agreement rate with Claude over enough spot-checks.
-TIER1_CONFIDENCE_MIN = float(os.environ.get("TIER1_CONFIDENCE_MIN", "0.85"))
+# Two independent confidence cutoffs instead of one shared threshold, since
+# the two prediction classes have very different failure costs: a false
+# "not relevant" silently drops a job the candidate would have wanted
+# (unrecoverable), while a false "relevant" just costs one extra cheap
+# Stage-A email the candidate rejects immediately. Defaults are derived from
+# scripts/tier1/evaluate.py's per-predicted-class confidence-calibration
+# tables (see README's "Round 3" section), not arbitrary guesses - retune
+# once more real spot-check data accumulates
+# (jobfinder.db.store.summarize_tier1_decisions()).
+#
+# "Not relevant" predictions are only trusted (Claude call skipped) at or
+# above this relevance_confidence. Round 3's calibration table alone would
+# suggest ~0.95 is enough (accuracy is ~100% from that point on), but a
+# direct check of every missed-relevant (false negative) example's own
+# confidence found one at 0.966 that would have cleared a 0.95 cutoff and
+# been silently auto-handled wrong - a risk the aggregated quartile table
+# alone doesn't surface. Raised to 0.97 to exclude that specific case;
+# re-verify this the same way (don't just eyeball the quartile table) any
+# time this is retuned.
+TIER1_NOT_RELEVANT_CONFIDENCE_MIN = float(os.environ.get("TIER1_NOT_RELEVANT_CONFIDENCE_MIN", "0.97"))
+# "Relevant" predictions (and the resume_variant pick that comes with them)
+# are only trusted at or above this confidence, applied to BOTH
+# relevance_confidence and resume_confidence. Round 3's eval set has 19
+# predicted-relevant examples (up from round 2's 4): accuracy (fraction
+# genuinely relevant) is 80% around confidence 0.61-0.70, reaching 100% by
+# ~0.86+. Since a wrong "relevant" prediction only costs one cheap Stage-A
+# email (not a silent miss), 0.60 is kept as a deliberately looser cutoff
+# than the not-relevant threshold above - the asymmetry is the point.
+TIER1_RELEVANT_CONFIDENCE_MIN = float(os.environ.get("TIER1_RELEVANT_CONFIDENCE_MIN", "0.60"))
 # Fraction of confident local-model decisions to double-check against Claude
 # anyway, purely to log agreement/disagreement (0.1 = roughly 1 in 10).
 TIER1_AGREEMENT_CHECK_RATE = float(os.environ.get("TIER1_AGREEMENT_CHECK_RATE", "0.1"))
 TIER1_MODEL_PATH = Path(
     os.environ.get("TIER1_MODEL_PATH", str(BASE_DIR / "models" / "tier1_classifier.q4_k_m.gguf"))
 )
+
 
 SCRAPE_MIN_DELAY_SECONDS = 3
 SCRAPE_MAX_DELAY_SECONDS = 8
