@@ -158,7 +158,37 @@ submitted:
   nothing beyond the initial relevance/resume-selection calls - the cover
   letter is never drafted for postings you'd have rejected anyway.
 
-## Tier-1 local classifier (optional, on by default as of round 4)
+### Cover-letter requirement detection
+
+Not every application form wants (or has room for) a full cover letter, so
+each `Application` gets a `cover_letter_requirement` field -
+`none` | `short_note` | `full_letter` - decided once, at posting-creation
+time, before Stage B ever runs:
+
+- **Recognized ATS templates** (Greenhouse, Lever, Workday, Comeet,
+  SmartRecruiters, JazzHR - see `jobfinder/local/ats/`) declare their field
+  type as a static class attribute on each adapter, since it's already known
+  for free (e.g. Lever's form has no dedicated cover-letter field, just a
+  generic "Additional Information" box, so it's classified `short_note`).
+- **Everything else** (LinkedIn Easy Apply, or a company-site posting on an
+  unrecognized/bespoke career page) falls back to a cheap heuristic scan of
+  the posting text (`jobfinder/ai/cover_letter_requirement.py`) for explicit
+  signals ("no cover letter needed", "cover letter optional", a stated
+  character limit, etc.), defaulting to `full_letter` when nothing matches -
+  skipping a wanted letter is worse than generating an unneeded one.
+
+`process_stage_a_approval` branches on this field: `none` skips
+cover-letter generation entirely (a lightweight Stage B email is sent
+instead, with no cover-letter section) and `short_note`/`full_letter` pass
+the requirement (plus any known `cover_letter_char_limit`) into
+`generate_cover_letter` to select the matching prompt/length target (see
+below). If the local apply step later finds the real form doesn't actually
+match the upfront classification, it adapts the already-approved letter
+locally (truncating for a short field, or leaving it blank for none) rather
+than re-calling Claude, and logs a `cover_letter_classification_mismatch`
+event on the Application for visibility.
+
+
 
 A fine-tuned local model can take over the relevance-filter and
 resume-selection Claude calls for postings that already passed tier-0,
