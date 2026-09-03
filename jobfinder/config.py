@@ -63,11 +63,13 @@ TIER0_MODEL_NAME = os.environ.get("TIER0_MODEL_NAME", "all-MiniLM-L6-v2")
 
 # Tier-1 local fine-tuned classifier (LoRA-tuned Qwen2.5-1.5B-Instruct, see
 # scripts/tier1/) that can replace the Claude relevance-filter and
-# resume-selection calls for postings that already passed tier-0. Kill-switch
-# defaults to off (no trained model shipped yet / instant revert if something
-# looks wrong): false means every posting goes through the pre-tier1
-# all-Claude path, identical to before this feature existed.
-TIER1_MODEL_ENABLED = os.environ.get("TIER1_MODEL_ENABLED", "false").lower() == "true"
+# resume-selection calls for postings that already passed tier-0. Enabled by
+# default as of round 4 (see README's "Round 4" section): round 3's model was
+# validated against a genuinely fresh, verified-non-overlapping 187-example
+# holdout set with no retraining/threshold changes, and every headline metric
+# held or improved. Set to "false" to instantly revert to the all-Claude path
+# identical to before this feature existed, if live traffic ever disagrees.
+TIER1_MODEL_ENABLED = os.environ.get("TIER1_MODEL_ENABLED", "true").lower() == "true"
 # Two independent confidence cutoffs instead of one shared threshold, since
 # the two prediction classes have very different failure costs: a false
 # "not relevant" silently drops a job the candidate would have wanted
@@ -98,8 +100,14 @@ TIER1_NOT_RELEVANT_CONFIDENCE_MIN = float(os.environ.get("TIER1_NOT_RELEVANT_CON
 # than the not-relevant threshold above - the asymmetry is the point.
 TIER1_RELEVANT_CONFIDENCE_MIN = float(os.environ.get("TIER1_RELEVANT_CONFIDENCE_MIN", "0.60"))
 # Fraction of confident local-model decisions to double-check against Claude
-# anyway, purely to log agreement/disagreement (0.1 = roughly 1 in 10).
-TIER1_AGREEMENT_CHECK_RATE = float(os.environ.get("TIER1_AGREEMENT_CHECK_RATE", "0.1"))
+# anyway, purely to log agreement/disagreement. Kept high (0.5 = roughly 1 in
+# 2) for the first stretch of real production use now that TIER1_MODEL_ENABLED
+# defaults to true - the fresh-holdout set behind that decision is still only
+# 187 examples, and this spot-check is what will actually reveal it if real
+# traffic looks different from synthetic data in some way none of rounds 1-4
+# happened to surface. Relax back down (e.g. to 0.1) only once a few weeks of
+# store.summarize_tier1_decisions() agreement data confirms it holds up live.
+TIER1_AGREEMENT_CHECK_RATE = float(os.environ.get("TIER1_AGREEMENT_CHECK_RATE", "0.5"))
 TIER1_MODEL_PATH = Path(
     os.environ.get("TIER1_MODEL_PATH", str(BASE_DIR / "models" / "tier1_classifier.q4_k_m.gguf"))
 )

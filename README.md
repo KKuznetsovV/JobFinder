@@ -65,8 +65,9 @@ flowchart LR
      (default `all-MiniLM-L6-v2`, ~90MB, downloaded once and cached under
      `~/.cache/huggingface`).
    - `TIER1_MODEL_ENABLED` - kill-switch for the local tier-1 classifier
-     (default `false`: every posting goes through Claude, unchanged from
-     before this feature existed). See "Tier-1 local classifier" below.
+     (default `true` as of round 4's fresh-holdout validation; set `false`
+     to revert to every posting going through Claude, unchanged from before
+     this feature existed). See "Tier-1 local classifier" below.
    - `TIER1_NOT_RELEVANT_CONFIDENCE_MIN` - 0-1 confidence cutoff below which
      a tier-1 "not relevant" prediction falls back to a real Claude call
      instead (default `0.97`; see "Round 3" below for how this was derived).
@@ -76,7 +77,8 @@ flowchart LR
      different failure costs (default `0.60`).
    - `TIER1_AGREEMENT_CHECK_RATE` - fraction of confident local decisions to
      double-check against Claude anyway, purely for accuracy tracking
-     (default `0.1`).
+     (default `0.5` - kept high for the first stretch of real production use;
+     relax once live agreement data confirms round 4's validation holds up).
    - `TIER1_MODEL_PATH` - path to the quantized GGUF model file (default
      `models/tier1_classifier.q4_k_m.gguf`).
 
@@ -156,13 +158,16 @@ submitted:
   nothing beyond the initial relevance/resume-selection calls - the cover
   letter is never drafted for postings you'd have rejected anyway.
 
-## Tier-1 local classifier (optional, off by default)
+## Tier-1 local classifier (optional, on by default as of round 4)
 
 A fine-tuned local model can take over the relevance-filter and
 resume-selection Claude calls for postings that already passed tier-0,
 further cutting API spend once enough real usage has accumulated training
-data. Disabled by default (`TIER1_MODEL_ENABLED=false`) - with it off,
-behavior is identical to the plain Claude path described above.
+data. Enabled by default (`TIER1_MODEL_ENABLED=true`) since round 4's
+fresh-holdout validation confirmed round 3's model generalizes to unseen
+data (see "Round 4" below) - set `TIER1_MODEL_ENABLED=false` to instantly
+revert to the plain Claude path described above if live traffic ever
+disagrees with the offline validation.
 
 How it works (`jobfinder/ai/tier1_classifier.py`):
 
@@ -452,11 +457,23 @@ production-risk surface) had zero errors. The caveat carried over from round
 3 still applies at a smaller magnitude - 33 relevant examples in this fresh
 set is still a modest sample, so exact percentages (particularly 100%
 accuracy/precision) will not stay exactly at 100% forever - but there is no
-directional weakness to explain away. Per the validation's design, this round
-makes **no changes** to the model, to `TIER1_NOT_RELEVANT_CONFIDENCE_MIN`
-(0.97) or `TIER1_RELEVANT_CONFIDENCE_MIN` (0.60), or to `TIER1_MODEL_ENABLED`
-(still `false` by default) - it only confirms round 3's recommendation to
-enable it now rests on firmer evidence than a single self-similar eval set.
+directional weakness to explain away. This validation itself makes **no
+changes** to the model or to `TIER1_NOT_RELEVANT_CONFIDENCE_MIN` (0.97) /
+`TIER1_RELEVANT_CONFIDENCE_MIN` (0.60) - it only confirms round 3's
+recommendation to enable rests on firmer evidence than a single
+self-similar eval set.
+
+**Enabled in production.** Rounds 2, 3, and 4 have been merged into `main`
+in that order, and `TIER1_MODEL_ENABLED` now defaults to **`true`**. Given
+the fresh-holdout set behind this decision is still only 187 examples,
+`TIER1_AGREEMENT_CHECK_RATE` was raised from its prior `0.1` default to
+**`0.5`** for the first stretch of real production use - that spot-check
+(logged to `tier1_decisions`, queryable via
+`store.summarize_tier1_decisions()`) is what will actually reveal it if real
+traffic looks different from synthetic data in some way none of rounds 1-4
+happened to surface. Once a few weeks of live agreement data confirms it
+holds up, relax the check rate back down (e.g. to `0.1`) and trust the model
+more fully.
 
 ## Project structure
 

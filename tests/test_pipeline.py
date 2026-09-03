@@ -40,6 +40,7 @@ def test_process_new_posting_returns_none_when_not_relevant(tmp_path, mocker):
     db_path = tmp_path / "test.db"
     store.init_db(db_path)
     job = _job(db_path)
+    mocker.patch.object(config, "TIER1_MODEL_ENABLED", False)
     mocker.patch(
         "jobfinder.pipeline.tier0_filter.score_posting",
         return_value=Tier0Result(score=1.0, resume_hint=None),
@@ -57,6 +58,7 @@ def test_process_new_posting_rejects_below_tier0_threshold(tmp_path, mocker):
     db_path = tmp_path / "test.db"
     store.init_db(db_path)
     job = _job(db_path)
+    mocker.patch.object(config, "TIER1_MODEL_ENABLED", False)
     mocker.patch(
         "jobfinder.pipeline.tier0_filter.score_posting",
         return_value=Tier0Result(score=0.01, resume_hint=ResumeVariant.FULLSTACK),
@@ -83,6 +85,7 @@ def test_process_new_posting_creates_application_and_sends_stage_a(tmp_path, moc
     store.init_db(db_path)
     job = _job(db_path)
 
+    mocker.patch.object(config, "TIER1_MODEL_ENABLED", False)
     mocker.patch(
         "jobfinder.pipeline.tier0_filter.score_posting",
         return_value=Tier0Result(score=0.9, resume_hint=ResumeVariant.FULLSTACK),
