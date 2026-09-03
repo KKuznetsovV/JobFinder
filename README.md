@@ -398,6 +398,66 @@ per-example false-negative audit once more real eval data accumulates,
 rather than treating this as a fully closed question - but the evidence this
 round supports turning it on, which round 1 and round 2 did not.
 
+**Round 4 (`feature/tier1-fresh-holdout-validation`, fresh-holdout
+validation - no retraining)**: round 3's headline numbers came from an eval
+set (112 examples) that was itself derived from the same generator/config
+seed lineage as the training data, so this round asks a different question:
+does round 3's already-trained model actually generalize, or did it just get
+lucky against a familiar-flavored eval set? **No model, threshold, or
+routing code changed this round** - only `evaluate.py`, already run as-is,
+against genuinely new data.
+
+*Freshness verification*: `generate_synthetic_postings.py` draws from a
+finite combinatorial pool of titles/companies/description snippets, so even
+a brand-new random seed isn't guaranteed to avoid exact duplicates against
+2000+ existing labeled examples - confirmed real: a batch of 220 freshly-seeded
+postings (`--seed 20260903`) turned out to have **33 (15%) exact-text
+duplicates** against rounds 1-3's data (concentrated in the low-cardinality
+"unrelated" title/snippet bucket). Built `scripts/tier1/verify_fresh_holdout.py`
+to hash every candidate's classifier input text (title + company +
+description) and diff against hashes of every existing `train`/`val`/`eval`
+JSONL and raw synthetic-postings file, then filtered the 33 duplicates out.
+The remaining **187 postings verified as 0/187 overlap** with any prior
+round's data - this is the fresh holdout set. It was labeled via the same
+real Claude `relevance`/`resume_selector` calls used in prior rounds, but
+written to a standalone file (`scripts/tier1/label_fresh_holdout.py`) that
+never touches the `tier1_training_examples` DB table, so it can never
+leak into a future training or eval split.
+
+| metric | round 3 (eval, n=112) | round 4 (fresh holdout, n=187) |
+|---|---|---|
+| relevance accuracy | 92.9% | **98.9%** |
+| majority-class baseline | 79.5% | 82.4% |
+| relevance confusion (expected relevant: TP / FN) | 17 / 6 | **31 / 2** |
+| relevance confusion (expected not relevant: FP / TN) | 2 / 87 | 0 / 154 |
+| **relevant-class recall** | 73.9% | **93.9%** |
+| relevant-class precision | 89.5% | **100%** |
+| resume-variant accuracy (relevant only) | 95.7% | 97.0% |
+| auto-handled locally @ current thresholds | 81/112 (72.3%) | **158/187 (84.5%)** |
+| accuracy among auto-handled | 97.5% | **100%** |
+| false-negative rate among auto-handled | ~2.5% | **0%** |
+
+Every headline metric held or improved on genuinely fresh data: relevant-class
+recall rose from 73.9% to 93.9%, precision rose from 89.5% to 100%, a larger
+share of postings (84.5% vs 72.3%) qualified for local auto-handling, and
+**zero** of the 158 auto-handled fresh predictions were wrong (vs round 3's
+implied ~2.5% false-negative rate among its own auto-handled set). There is
+no sign of the model having overfit to the training distribution's specific
+phrasing.
+
+**Judgment: round 3's numbers generalize - this is a real pass, not a close
+call.** No hedging needed: recall and precision both improved rather than
+regressed on unseen data, and the auto-handled subset (the actual
+production-risk surface) had zero errors. The caveat carried over from round
+3 still applies at a smaller magnitude - 33 relevant examples in this fresh
+set is still a modest sample, so exact percentages (particularly 100%
+accuracy/precision) will not stay exactly at 100% forever - but there is no
+directional weakness to explain away. Per the validation's design, this round
+makes **no changes** to the model, to `TIER1_NOT_RELEVANT_CONFIDENCE_MIN`
+(0.97) or `TIER1_RELEVANT_CONFIDENCE_MIN` (0.60), or to `TIER1_MODEL_ENABLED`
+(still `false` by default) - it only confirms round 3's recommendation to
+enable it now rests on firmer evidence than a single self-similar eval set.
+
 ## Project structure
 
 ```
