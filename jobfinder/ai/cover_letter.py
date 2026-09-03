@@ -53,6 +53,34 @@ def _load_style_reference() -> str:
         return ""
 
 
+_FULL_LETTER_MAX_WORDS = 150
+_SHORT_NOTE_MAX_WORDS = 70
+_LENGTH_OVERAGE_TOLERANCE = 0.15  # flag/regenerate only if overshooting the target by more than this
+
+
+def _word_count(text: str) -> int:
+    return len(text.split())
+
+
+def _length_target_description(requirement: CoverLetterRequirement, char_limit: int | None) -> str:
+    if requirement == CoverLetterRequirement.SHORT_NOTE and char_limit:
+        return f"under {char_limit} characters"
+    max_words = _SHORT_NOTE_MAX_WORDS if requirement == CoverLetterRequirement.SHORT_NOTE else _FULL_LETTER_MAX_WORDS
+    return f"under {max_words} words"
+
+
+def _exceeds_length_target(
+    text: str, requirement: CoverLetterRequirement, char_limit: int | None
+) -> bool:
+    """True if `text` overshoots its target length (full_letter/short_note word
+    target, or short_note's known char_limit if set) by more than
+    `_LENGTH_OVERAGE_TOLERANCE`."""
+    if requirement == CoverLetterRequirement.SHORT_NOTE and char_limit:
+        return len(text) > char_limit * (1 + _LENGTH_OVERAGE_TOLERANCE)
+    max_words = _SHORT_NOTE_MAX_WORDS if requirement == CoverLetterRequirement.SHORT_NOTE else _FULL_LETTER_MAX_WORDS
+    return _word_count(text) > max_words * (1 + _LENGTH_OVERAGE_TOLERANCE)
+
+
 def _generate_draft(
     job: JobPosting,
     resume: dict,
@@ -91,8 +119,22 @@ def _generate_draft(
             length_instruction += f" Stay under {char_limit} characters, no exceptions."
         sign_off_instruction = ""
     else:
-        length_instruction = "Write roughly 200-300 words."
+        length_instruction = (
+            "Write roughly 100-150 words in three short paragraphs: an opening naming "
+            "the role and one concrete reason you're a fit, a middle paragraph on one "
+            "specific relevant experience from the resume, and a brief closing. Do not "
+            "restate the whole resume."
+        )
         sign_off_instruction = f" Sign the letter as '{config.APPLICANT_NAME}'."
+
+    targeting_instruction = (
+        " Identify 2-3 concrete, specific details from the job posting text below "
+        "(e.g. a named technology, responsibility, or requirement it mentions) and "
+        "reference at least two of them directly, so the letter clearly responds to "
+        "this exact posting rather than reading as generic. Base these details only "
+        "on what the posting text actually says - never invent details about the "
+        "company or role."
+    )
 
     message = create_message_with_retry(
         client,
@@ -105,8 +147,8 @@ def _generate_draft(
                     "You write cover letters for a job applicant. Ground every claim "
                     "strictly in the resume text provided - never invent skills, "
                     "employers, dates, or achievements not present in the resume. "
-                    f"{length_instruction} Match the tone/register of the "
-                    "provided style reference where reasonable, but keep it "
+                    f"{length_instruction}{targeting_instruction} Match the tone/register "
+                    "of the provided style reference where reasonable, but keep it "
                     f"professional enough for a cover letter.{sign_off_instruction}"
                 ),
                 "cache_control": {"type": "ephemeral"},
@@ -178,6 +220,11 @@ def generate_cover_letter(
     per the user's feedback instead of writing a fresh draft. Pass
     `requirement`/`char_limit` (see `jobfinder.db.models.CoverLetterRequirement`)
     to target a short inline-form note instead of a full letter.
+
+    If the fact-checked draft overshoots its length target (100-150 words for
+    full_letter, 40-70 words or the given char_limit for short_note) by more
+    than ~15%, one extra generate+fact-check round is run asking the model to
+    shorten it - this never happens for a well-behaved draft.
     """
     if client is None:
         client = get_client()
@@ -196,4 +243,20 @@ def generate_cover_letter(
         char_limit=char_limit,
     )
     final_letter, issues = _fact_check(draft, resume, client)
+
+    if _exceeds_length_target(final_letter, requirement, char_limit):
+        shorten_feedback = f"Too long - cut it down to {_length_target_description(requirement, char_limit)} while keeping the same content and grounding."
+        draft = _generate_draft(
+            job,
+            resume,
+            style_reference,
+            client,
+            revision_feedback=shorten_feedback,
+            previous_letter=final_letter,
+            requirement=requirement,
+            char_limit=char_limit,
+        )
+        final_letter, more_issues = _fact_check(draft, resume, client)
+        issues = issues + more_issues
+
     return final_letter, issues
