@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from jobfinder.db.models import Application, JobPosting
+from jobfinder.db.models import Application, CoverLetterRequirement, JobPosting
 
 
 class ATSFormError(RuntimeError):
@@ -22,6 +22,12 @@ class ATSFormError(RuntimeError):
 
 class ATSAdapter(ABC):
     name: str
+    # Static per-ATS-template knowledge of the cover-letter field this
+    # platform's default application form exposes, used by
+    # jobfinder.ai.cover_letter_requirement to decide what Stage B should
+    # generate - free, no per-job guessing needed for recognized templates.
+    cover_letter_requirement: CoverLetterRequirement = CoverLetterRequirement.FULL_LETTER
+    cover_letter_char_limit: int | None = None
 
     @staticmethod
     @abstractmethod

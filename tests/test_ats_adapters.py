@@ -1,7 +1,7 @@
 import pytest
 
 from jobfinder import config
-from jobfinder.db.models import Application, ApplyMethod, JobPosting, ResumeVariant
+from jobfinder.db.models import Application, ApplyMethod, CoverLetterRequirement, JobPosting, ResumeVariant
 from jobfinder.local import ats
 from jobfinder.local.ats.base import ATSFormError
 from jobfinder.local.ats.comeet import ComeetAdapter
@@ -219,3 +219,19 @@ def test_get_adapter_for_url_matches_known_platforms(url, expected_name):
 
 def test_get_adapter_for_url_returns_none_for_unknown_platform():
     assert ats.get_adapter_for_url("https://careers.driivz.com/apply/1") is None
+
+
+@pytest.mark.parametrize(
+    "adapter_class,expected_requirement",
+    [
+        (GreenhouseAdapter, CoverLetterRequirement.FULL_LETTER),
+        (LeverAdapter, CoverLetterRequirement.SHORT_NOTE),
+        (WorkdayAdapter, CoverLetterRequirement.FULL_LETTER),
+        (ComeetAdapter, CoverLetterRequirement.SHORT_NOTE),
+        (SmartRecruitersAdapter, CoverLetterRequirement.FULL_LETTER),
+        (JazzHRAdapter, CoverLetterRequirement.FULL_LETTER),
+    ],
+)
+def test_adapter_declares_cover_letter_requirement(adapter_class, expected_requirement):
+    assert adapter_class.cover_letter_requirement == expected_requirement
+

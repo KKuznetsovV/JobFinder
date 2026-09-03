@@ -7,12 +7,15 @@ application-form template.
 from __future__ import annotations
 
 from jobfinder import config
-from jobfinder.db.models import Application, JobPosting
+from jobfinder.db.models import Application, CoverLetterRequirement, JobPosting
 from jobfinder.local.ats.base import ATSAdapter, fill_if_present, require, resume_file_for, split_applicant_name
 
 
 class GreenhouseAdapter(ATSAdapter):
     name = "greenhouse"
+    # Greenhouse's default #cover_letter field accepts a full pasted letter
+    # (or file upload on some boards) with no meaningful length limit.
+    cover_letter_requirement = CoverLetterRequirement.FULL_LETTER
 
     @staticmethod
     def matches(url: str) -> bool:

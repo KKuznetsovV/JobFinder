@@ -85,6 +85,39 @@ def test_send_approval_request_updates_application(tmp_path, mocker):
     assert reloaded.gmail_thread_id == "thread-1"
 
 
+def test_build_stage_b_no_letter_email_omits_cover_letter_section(tmp_path):
+    job = _job()
+    application, _ = _application(tmp_path, job)
+    application.cover_letter = None
+
+    message = notify.build_stage_b_no_letter_email(application, job)
+
+    assert message[config.APP_ID_HEADER] == str(application.id)
+    assert "no cover letter needed" in message["Subject"].lower()
+    body = message.get_content()
+    assert "no cover-letter field" in body.lower()
+    assert "APPROVE" in body
+
+
+def test_send_stage_b_no_letter_request_updates_application(tmp_path, mocker):
+    job = _job()
+    application, db_path = _application(tmp_path, job)
+    application.cover_letter = None
+    fake_service = object()
+    mocker.patch(
+        "jobfinder.gmail.notify.send_raw_message",
+        return_value={"threadId": "thread-1", "id": "msg-1"},
+    )
+
+    updated = notify.send_stage_b_no_letter_request(fake_service, application, job, db_path=db_path)
+
+    assert updated.gmail_thread_id == "thread-1"
+    assert updated.status == ApplicationStatus.NOTIFIED
+
+    reloaded = store.get_application(application.id, db_path=db_path)
+    assert reloaded.status == ApplicationStatus.NOTIFIED
+
+
 def test_build_revision_email_is_a_reply_with_revised_letter(tmp_path):
     job = _job()
     application, _ = _application(tmp_path, job)

@@ -16,6 +16,7 @@ import logging
 import re
 
 from jobfinder import config
+from jobfinder.ai import cover_letter_requirement
 from jobfinder.ai.client import create_message_with_retry, get_client
 from jobfinder.db.models import Application, ApplicationStatus, JobPosting
 from jobfinder.local.browser_apply_fallback import _execute_tool, snapshot_elements
@@ -77,6 +78,15 @@ TOOLS = [
             "properties": {
                 "status": {"type": "string", "enum": ["ready_for_submit", "stuck"]},
                 "note": {"type": "string"},
+                "cover_letter_field_found": {
+                    "type": "string",
+                    "enum": ["full_letter_field", "short_field", "no_field"],
+                    "description": (
+                        "What kind of cover-letter/message field you actually found on this "
+                        "form, if any - used to check the upfront classification was right. "
+                        "Omit if not applicable/unsure."
+                    ),
+                },
             },
             "required": ["status", "note"],
         },
@@ -86,6 +96,20 @@ TOOLS = [
 
 def _build_system_prompt(application: Application, job: JobPosting) -> list[dict]:
     resume_file = str(resume_path(application.resume_variant))
+    adapted_cover_letter = cover_letter_requirement.adapt_cover_letter_locally(
+        application.cover_letter, application.cover_letter_requirement, application.cover_letter_char_limit
+    )
+    if adapted_cover_letter:
+        cover_letter_instruction = (
+            f"Cover letter text to use if the form has a cover-letter/message field:\n"
+            f"{adapted_cover_letter}"
+        )
+    else:
+        cover_letter_instruction = (
+            "No cover letter was drafted for this application (it isn't needed). If the "
+            "form unexpectedly has a cover-letter/message field, leave it blank rather than "
+            "inventing text, and report cover_letter_field_found accordingly when you finish."
+        )
     return [
         {
             "type": "text",
@@ -99,14 +123,14 @@ def _build_system_prompt(application: Application, job: JobPosting) -> list[dict
                 "human always does that themselves. Once every field is filled and the only "
                 "remaining action would be that final submit click, call finish with "
                 "status='ready_for_submit' and stop. If you get stuck, call finish with "
-                "status='stuck'.\n\n"
+                "status='stuck'. Whenever you call finish, also report "
+                "cover_letter_field_found based on what you actually saw on this form.\n\n"
                 f"Applicant name: {config.APPLICANT_NAME}\n"
                 f"Applicant email: {config.GMAIL_USER_EMAIL}\n"
                 f"Applicant phone: {config.APPLICANT_PHONE or 'not provided - call finish with status=stuck if a phone field is required'}\n"
                 f"Resume file path (for upload_by_ref): {resume_file}\n"
                 f"Job: {job.title} at {job.company}\nJob URL: {job.url}\n\n"
-                f"Cover letter text to use if the form has a cover-letter/message field:\n"
-                f"{application.cover_letter}"
+                f"{cover_letter_instruction}"
             ),
         }
     ]
@@ -161,6 +185,9 @@ def run_easy_apply_loop(
             if block.name == "finish":
                 finished_status = block.input["status"]
                 logger.info("browser-apply-linkedin finished: %s - %s", finished_status, block.input.get("note"))
+                cover_letter_requirement.log_if_classification_mismatched(
+                    application, block.input.get("cover_letter_field_found")
+                )
                 tool_results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": "acknowledged"}
                 )

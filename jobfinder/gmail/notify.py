@@ -143,6 +143,54 @@ def send_approval_request(
     return application
 
 
+def build_stage_b_no_letter_email(application: Application, job: JobPosting) -> EmailMessage:
+    """Build the lightweight Stage B email for postings whose application
+    form has no cover-letter field at all (`cover_letter_requirement=NONE`) -
+    same final-sign-off ask as `build_approval_email`, just without a cover
+    letter section since none was drafted."""
+    if application.id is None:
+        raise ValueError("Application must be inserted (have an id) before notifying")
+
+    message = EmailMessage()
+    message["To"] = config.GMAIL_USER_EMAIL
+    message["From"] = config.GMAIL_USER_EMAIL
+    message["Subject"] = f"Ready to apply: {job.title} at {job.company} (no cover letter needed)"
+    message[config.APP_ID_HEADER] = str(application.id)
+
+    submission_label = _APPLY_METHOD_LABELS.get(job.apply_method.value, job.apply_method.value)
+    body = (
+        f"Job: {job.title} at {job.company}\n"
+        f"Link: {job.url}\n"
+        f"Submission method: {submission_label}\n"
+        f"Relevance score: {application.relevance_score}\n\n"
+        f"Resume chosen: {application.resume_variant.value}\n"
+        f"Reason: {application.resume_choice_reason}\n\n"
+        f"This application's form has no cover-letter field, so none was drafted.\n\n"
+        f"Reply APPROVE to send this application, or REJECT to skip it."
+    )
+    message.set_content(body)
+    return message
+
+
+def send_stage_b_no_letter_request(
+    service, application: Application, job: JobPosting, db_path: str | None = None
+) -> Application:
+    """Send the lightweight no-cover-letter Stage B email, then update the
+    Application's gmail_thread_id/status in the datastore, same as
+    `send_approval_request`."""
+    message = build_stage_b_no_letter_email(application, job)
+    response = send_raw_message(service, message.as_bytes())
+
+    application.gmail_thread_id = response["threadId"]
+    application.gmail_last_message_id = response["id"]
+    application.status = ApplicationStatus.NOTIFIED
+    store.update_application(application, db_path=db_path)
+    store.append_apply_log(
+        application, "notified", "Sent lightweight approval-request email (no cover letter needed).", db_path=db_path
+    )
+    return application
+
+
 def build_revision_email(application: Application, job: JobPosting) -> EmailMessage:
     if application.id is None:
         raise ValueError("Application must be inserted (have an id) before notifying")

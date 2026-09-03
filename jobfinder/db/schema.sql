@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS applications (
     tier0_score           REAL,     -- local embedding-similarity score (0-1), pre-Claude
     tier0_resume_hint     TEXT CHECK (tier0_resume_hint IN ('fullstack', 'project_manager') OR tier0_resume_hint IS NULL),
     stage_a_approved_at   TEXT,     -- set when the user approves the job+resume match (Stage A)
-    stage_a_revision_count INTEGER NOT NULL DEFAULT 0
+    stage_a_revision_count INTEGER NOT NULL DEFAULT 0,
+    cover_letter_requirement TEXT NOT NULL DEFAULT 'full_letter' CHECK (cover_letter_requirement IN (
+                              'none', 'short_note', 'full_letter'
+                          )),
+    cover_letter_char_limit INTEGER  -- known char limit for short_note, when the form exposes one
 );
 
 CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);

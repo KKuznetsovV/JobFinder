@@ -6,12 +6,16 @@ Field names (name/email/resume/comments) follow Lever's documented default
 from __future__ import annotations
 
 from jobfinder import config
-from jobfinder.db.models import Application, JobPosting
+from jobfinder.db.models import Application, CoverLetterRequirement, JobPosting
 from jobfinder.local.ats.base import ATSAdapter, fill_if_present, require, resume_file_for, split_applicant_name
 
 
 class LeverAdapter(ATSAdapter):
     name = "lever"
+    # Lever's default form has no dedicated cover-letter field - "comments"
+    # is a generic "Additional Information" box, so a short note fits better
+    # than a full formal letter.
+    cover_letter_requirement = CoverLetterRequirement.SHORT_NOTE
 
     @staticmethod
     def matches(url: str) -> bool:

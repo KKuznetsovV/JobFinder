@@ -25,6 +25,16 @@ class ResumeVariant(str, Enum):
     PROJECT_MANAGER = "project_manager"
 
 
+class CoverLetterRequirement(str, Enum):
+    """What a given application's target form actually needs, decided before
+    Stage B (cover-letter generation) runs so postings that don't want a
+    full letter don't waste a generation + fact-check Claude call on one."""
+
+    NONE = "none"  # no cover-letter field at all - skip generation entirely
+    SHORT_NOTE = "short_note"  # a small char/word-limited text box
+    FULL_LETTER = "full_letter"  # a full letter (file upload or unrestricted text field)
+
+
 class ApplicationStatus(str, Enum):
     FOUND = "found"
     NOTIFIED = "notified"  # Stage B (cover letter) approval pending
@@ -75,6 +85,8 @@ class Application:
     tier0_resume_hint: ResumeVariant | None = None
     stage_a_approved_at: str | None = None
     stage_a_revision_count: int = 0
+    cover_letter_requirement: CoverLetterRequirement = CoverLetterRequirement.FULL_LETTER
+    cover_letter_char_limit: int | None = None
     id: int | None = None
 
 

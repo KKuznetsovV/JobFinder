@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from jobfinder.ai import cover_letter
-from jobfinder.db.models import ApplyMethod, JobPosting, ResumeVariant
+from jobfinder.db.models import ApplyMethod, CoverLetterRequirement, JobPosting, ResumeVariant
 
 
 def _job():
@@ -111,3 +111,42 @@ def test_generate_draft_with_revision_feedback_asks_to_revise_previous_letter(mo
     user_content = capture["messages"][0]["content"]
     assert "Make it shorter." in user_content
     assert "Dear hiring team, long previous letter..." in user_content
+
+
+def test_generate_draft_short_note_uses_a_distinctly_different_system_prompt(mocker):
+    capture = {}
+
+    def fake_create_message(client, **kwargs):
+        capture["system"] = kwargs["system"]
+        return _text_message("Great fit, five years of relevant experience.")
+
+    mocker.patch(
+        "jobfinder.ai.cover_letter.create_message_with_retry", side_effect=fake_create_message
+    )
+
+    cover_letter._generate_draft(
+        _job(),
+        {"raw_text": "Experienced Python developer."},
+        "casual style",
+        client=object(),
+        requirement=CoverLetterRequirement.SHORT_NOTE,
+        char_limit=200,
+    )
+
+    short_note_system_text = capture["system"][0]["text"]
+
+    mocker.patch(
+        "jobfinder.ai.cover_letter.create_message_with_retry", side_effect=fake_create_message
+    )
+    cover_letter._generate_draft(
+        _job(),
+        {"raw_text": "Experienced Python developer."},
+        "casual style",
+        client=object(),
+    )
+    full_letter_system_text = capture["system"][0]["text"]
+
+    assert short_note_system_text != full_letter_system_text
+    assert "40-70 words" in short_note_system_text
+    assert "200 characters" in short_note_system_text
+    assert "200-300 words" in full_letter_system_text
