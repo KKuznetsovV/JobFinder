@@ -17,6 +17,10 @@ provided to the model - it must ground every filled value in those.
 from __future__ import annotations
 
 import logging
+from typing import Any
+
+import anthropic
+from playwright.sync_api import Locator, Page
 
 from jobfinder import config
 from jobfinder.ai import cover_letter_requirement
@@ -30,7 +34,7 @@ MAX_STEPS = 40
 
 _INTERACTIVE_SELECTOR = "input, textarea, select, button, a[href], [role='button'], [contenteditable='true']"
 
-TOOLS = [
+TOOLS: list[dict[str, Any]] = [
     {
         "name": "list_elements",
         "description": "List the interactive elements currently visible on the page, each tagged with a ref id.",
@@ -92,13 +96,13 @@ TOOLS = [
 ]
 
 
-def snapshot_elements(page) -> tuple[str, dict[str, object]]:
+def snapshot_elements(page: Page) -> tuple[str, dict[str, Locator]]:
     """Return (text_description, ref_map) where ref_map maps ref strings to
     Playwright Locators for the currently visible interactive elements."""
     locator = page.locator(_INTERACTIVE_SELECTOR)
     count = locator.count()
-    ref_map: dict[str, object] = {}
-    lines = []
+    ref_map: dict[str, Locator] = {}
+    lines: list[str] = []
     for i in range(count):
         element = locator.nth(i)
         ref = f"e{i}"
@@ -117,7 +121,7 @@ def snapshot_elements(page) -> tuple[str, dict[str, object]]:
     return "\n".join(lines), ref_map
 
 
-def _build_system_prompt(application: Application, job: JobPosting) -> list[dict]:
+def _build_system_prompt(application: Application, job: JobPosting) -> list[dict[str, Any]]:
     resume_file = str(resume_path(application.resume_variant))
     adapted_cover_letter = cover_letter_requirement.adapt_cover_letter_locally(
         application.cover_letter, application.cover_letter_requirement, application.cover_letter_char_limit
@@ -158,7 +162,9 @@ def _build_system_prompt(application: Application, job: JobPosting) -> list[dict
     ]
 
 
-def _execute_tool(page, ref_map: dict[str, object], name: str, tool_input: dict) -> tuple[str, dict[str, object]]:
+def execute_tool(
+    page: Page, ref_map: dict[str, Locator], name: str, tool_input: dict[str, Any]
+) -> tuple[str, dict[str, Locator]]:
     """Execute one tool call. Returns (result_text, possibly-updated ref_map)."""
     try:
         if name == "list_elements":
@@ -184,7 +190,11 @@ def _execute_tool(page, ref_map: dict[str, object], name: str, tool_input: dict)
 
 
 def run_apply_loop(
-    page, application: Application, job: JobPosting, client=None, max_steps: int = MAX_STEPS
+    page: Page,
+    application: Application,
+    job: JobPosting,
+    client: anthropic.Anthropic | None = None,
+    max_steps: int = MAX_STEPS,
 ) -> ApplicationStatus:
     """Drive the accessibility-tree tool loop to fill and submit the
     application. Returns ApplicationStatus.SENT on a successful submission,
@@ -194,13 +204,13 @@ def run_apply_loop(
         client = get_client()
 
     system = _build_system_prompt(application, job)
-    messages = [
+    messages: list[dict[str, Any]] = [
         {
             "role": "user",
             "content": "Begin filling out the job application on the current page. Call list_elements first.",
         }
     ]
-    ref_map: dict[str, object] = {}
+    ref_map: dict[str, Locator] = {}
 
     for _ in range(max_steps):
         message = create_message_with_retry(
@@ -208,22 +218,23 @@ def run_apply_loop(
         )
         messages.append({"role": "assistant", "content": message.content})
 
-        tool_results = []
+        tool_results: list[dict[str, Any]] = []
         finished_status = None
         for block in message.content:
-            if getattr(block, "type", None) != "tool_use":
+            if block.type != "tool_use":
                 continue
             if block.name == "finish":
                 finished_status = block.input["status"]
                 logger.info("browser-apply-fallback finished: %s - %s", finished_status, block.input.get("note"))
+                raw_field_found = block.input.get("cover_letter_field_found")
                 cover_letter_requirement.log_if_classification_mismatched(
-                    application, block.input.get("cover_letter_field_found")
+                    application, raw_field_found if isinstance(raw_field_found, str) else None
                 )
                 tool_results.append(
                     {"type": "tool_result", "tool_use_id": block.id, "content": "acknowledged"}
                 )
                 continue
-            result_text, ref_map = _execute_tool(page, ref_map, block.name, block.input)
+            result_text, ref_map = execute_tool(page, ref_map, block.name, block.input)
             tool_results.append({"type": "tool_result", "tool_use_id": block.id, "content": result_text})
 
         if finished_status is not None:

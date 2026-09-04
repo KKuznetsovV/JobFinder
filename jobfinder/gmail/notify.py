@@ -18,6 +18,8 @@ from __future__ import annotations
 
 from email.message import EmailMessage
 
+from googleapiclient.discovery import Resource  # type: ignore
+
 from jobfinder import config
 from jobfinder.db import store
 from jobfinder.db.models import Application, ApplicationStatus, JobPosting
@@ -67,7 +69,7 @@ def build_stage_a_email(application: Application, job: JobPosting, revised: bool
 
 
 def send_stage_a_request(
-    service, application: Application, job: JobPosting, db_path: str | None = None
+    service: Resource, application: Application, job: JobPosting, db_path: str | None = None
 ) -> Application:
     """Send the initial Stage A email and mark the application as pending
     Stage A approval."""
@@ -85,7 +87,7 @@ def send_stage_a_request(
 
 
 def send_stage_a_revision(
-    service, application: Application, job: JobPosting, db_path: str | None = None
+    service: Resource, application: Application, job: JobPosting, db_path: str | None = None
 ) -> Application:
     """Re-send the Stage A email in the same thread after the resume choice
     was corrected per the user's feedback."""
@@ -128,7 +130,7 @@ def build_approval_email(application: Application, job: JobPosting) -> EmailMess
 
 
 def send_approval_request(
-    service, application: Application, job: JobPosting, db_path: str | None = None
+    service: Resource, application: Application, job: JobPosting, db_path: str | None = None
 ) -> Application:
     """Send the approval-request email, then update the Application's
     gmail_thread_id/status in the datastore. Returns the updated Application."""
@@ -173,7 +175,7 @@ def build_stage_b_no_letter_email(application: Application, job: JobPosting) -> 
 
 
 def send_stage_b_no_letter_request(
-    service, application: Application, job: JobPosting, db_path: str | None = None
+    service: Resource, application: Application, job: JobPosting, db_path: str | None = None
 ) -> Application:
     """Send the lightweight no-cover-letter Stage B email, then update the
     Application's gmail_thread_id/status in the datastore, same as
@@ -219,7 +221,7 @@ def build_revision_email(application: Application, job: JobPosting) -> EmailMess
 
 
 def send_revision_request(
-    service, application: Application, job: JobPosting, db_path: str | None = None
+    service: Resource, application: Application, job: JobPosting, db_path: str | None = None
 ) -> Application:
     """Re-send the approval-request email in the same thread after the cover
     letter was revised per the user's feedback. Returns the updated Application."""

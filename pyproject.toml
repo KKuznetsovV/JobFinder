@@ -7,3 +7,11 @@ requires-python = ">=3.11"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.pyright]
+# googleapiclient (google-api-python-client) ships no py.typed stubs at all,
+# so pyright/Pylance flags "Stub file not found" on the `Resource` import
+# non-deterministically (whichever file the analyzer resolves it in first).
+# There is no usable stub package for it (see repo memory) - disable this
+# specific diagnostic rather than chasing it file-to-file.
+reportMissingModuleSource = false

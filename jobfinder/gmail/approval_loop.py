@@ -19,6 +19,10 @@ from __future__ import annotations
 
 import base64
 from email.message import EmailMessage
+from typing import Any
+
+import anthropic
+from googleapiclient.discovery import Resource  # type: ignore
 
 from jobfinder import config
 from jobfinder.ai.client import create_message_with_retry, get_client
@@ -27,7 +31,7 @@ from jobfinder.db.models import Application, ApplicationStatus, JobPosting, Resu
 from jobfinder.gmail import notify
 from jobfinder.gmail.client import get_thread, send_raw_message
 
-_CLASSIFY_TOOL = {
+_CLASSIFY_TOOL: dict[str, Any] = {
     "name": "classify_reply",
     "description": "Classify the user's reply to an application approval-request email.",
     "input_schema": {
@@ -50,14 +54,14 @@ _CLASSIFY_TOOL = {
 }
 
 
-def _extract_message_text(payload: dict) -> str:
+def _extract_message_text(payload: dict[str, Any]) -> str:
     """Prefer text/plain; fall back to text/html (best-effort, tags left in)."""
 
     def _decode(body_data: str) -> str:
         padded = body_data + "=" * (-len(body_data) % 4)
         return base64.urlsafe_b64decode(padded).decode("utf-8", errors="replace")
 
-    def _walk(part: dict, wanted_mime: str) -> str | None:
+    def _walk(part: dict[str, Any], wanted_mime: str) -> str | None:
         body_data = part.get("body", {}).get("data")
         if part.get("mimeType") == wanted_mime and body_data:
             return _decode(body_data)
@@ -70,10 +74,12 @@ def _extract_message_text(payload: dict) -> str:
     return _walk(payload, "text/plain") or _walk(payload, "text/html") or ""
 
 
-def _latest_reply_text(service, application: Application) -> tuple[str | None, str | None]:
+def _latest_reply_text(service: Resource, application: Application) -> tuple[str | None, str | None]:
     """Return (message_id, text) for the newest message in the thread that
     isn't the notification message we already sent, or (None, None) if there
     is no such reply yet."""
+    if application.gmail_thread_id is None:
+        return None, None
     thread = get_thread(service, application.gmail_thread_id)
     messages = thread.get("messages", [])
     for message in reversed(messages):
@@ -83,7 +89,9 @@ def _latest_reply_text(service, application: Application) -> tuple[str | None, s
     return None, None
 
 
-def _classify_reply(reply_text: str, client=None, stage_context: str = "") -> tuple[str, str]:
+def _classify_reply(
+    reply_text: str, client: anthropic.Anthropic | None = None, stage_context: str = ""
+) -> tuple[str, str]:
     if client is None:
         client = get_client()
 
@@ -107,15 +115,15 @@ def _classify_reply(reply_text: str, client=None, stage_context: str = "") -> tu
     )
 
     for block in message.content:
-        if getattr(block, "type", None) == "tool_use" and block.name == "classify_reply":
-            data = block.input
+        if block.type == "tool_use" and block.name == "classify_reply":
+            data: dict[str, Any] = block.input  # type: ignore[assignment]
             return str(data["classification"]), str(data.get("feedback", ""))
 
     raise ValueError("Claude did not call classify_reply as expected")
 
 
 def _send_clarifying_email(
-    service, application: Application, job: JobPosting, note: str, subject: str | None = None
+    service: Resource, application: Application, job: JobPosting, note: str, subject: str | None = None
 ) -> None:
     reply = EmailMessage()
     reply["To"] = config.GMAIL_USER_EMAIL
@@ -138,7 +146,11 @@ def _stage_a_subject(job: JobPosting) -> str:
 
 
 def process_stage_a_reply(
-    service, application: Application, job: JobPosting, db_path: str | None = None, client=None
+    service: Resource,
+    application: Application,
+    job: JobPosting,
+    db_path: str | None = None,
+    client: anthropic.Anthropic | None = None,
 ) -> Application:
     """Check for a new reply to the Stage A (job + resume match) notification
     and act on it. No-op (returns application unchanged) if there's no new
@@ -152,7 +164,7 @@ def process_stage_a_reply(
     from jobfinder import pipeline  # local import: pipeline doesn't import this module
 
     message_id, reply_text = _latest_reply_text(service, application)
-    if message_id is None:
+    if message_id is None or reply_text is None:
         return application
 
     classification, feedback = _classify_reply(
@@ -207,13 +219,17 @@ def process_stage_a_reply(
 
 
 def process_reply(
-    service, application: Application, job: JobPosting, db_path: str | None = None, client=None
+    service: Resource,
+    application: Application,
+    job: JobPosting,
+    db_path: str | None = None,
+    client: anthropic.Anthropic | None = None,
 ) -> Application:
     """Check for a new reply in the Stage B (cover-letter) application's
     thread and act on it. No-op (returns application unchanged) if there's
     no new reply yet."""
     message_id, reply_text = _latest_reply_text(service, application)
-    if message_id is None:
+    if message_id is None or reply_text is None:
         return application
 
     classification, feedback = _classify_reply(

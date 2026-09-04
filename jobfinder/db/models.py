@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 
 def utcnow_iso() -> str:
@@ -78,7 +79,7 @@ class Application:
     gmail_thread_id: str | None = None
     gmail_last_message_id: str | None = None
     revision_count: int = 0  # Stage B (cover-letter) revisions only
-    apply_log: list[dict] = field(default_factory=list)
+    apply_log: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=utcnow_iso)
     updated_at: str = field(default_factory=utcnow_iso)
     tier0_score: float | None = None

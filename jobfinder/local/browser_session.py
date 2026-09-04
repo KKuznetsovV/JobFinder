@@ -12,14 +12,17 @@ from __future__ import annotations
 
 import logging
 from contextlib import contextmanager
-from typing import Iterator
+from typing import TYPE_CHECKING, Generator
 
 from jobfinder import config
+
+if TYPE_CHECKING:
+    from playwright.sync_api import BrowserContext, Page, Playwright
 
 logger = logging.getLogger(__name__)
 
 
-def launch_persistent_context(playwright, headless: bool = False):
+def launch_persistent_context(playwright: Playwright, headless: bool = False) -> BrowserContext:
     config.CHROME_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     return playwright.chromium.launch_persistent_context(
         user_data_dir=str(config.CHROME_USER_DATA_DIR),
@@ -29,7 +32,7 @@ def launch_persistent_context(playwright, headless: bool = False):
 
 
 @contextmanager
-def browser_session(headless: bool = False) -> Iterator:
+def browser_session(headless: bool = False) -> Generator[Page]:
     """Yield a Page backed by the persistent, real-Chrome profile. Reuses an
     already-open tab if the persistent context restores one, otherwise opens
     a new page."""

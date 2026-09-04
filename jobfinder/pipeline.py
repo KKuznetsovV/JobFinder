@@ -10,6 +10,9 @@ from __future__ import annotations
 
 import logging
 
+import anthropic
+from googleapiclient.discovery import Resource  # type: ignore
+
 from jobfinder import config
 from jobfinder.ai import cover_letter as cover_letter_module
 from jobfinder.ai import cover_letter_requirement
@@ -24,9 +27,9 @@ logger = logging.getLogger(__name__)
 
 def process_new_posting(
     job: JobPosting,
-    gmail_service,
+    gmail_service: Resource,
     db_path: str | None = None,
-    client=None,
+    client: anthropic.Anthropic | None = None,
     tier0_result: tier0_filter.Tier0Result | None = None,
 ) -> Application | None:
     """Run the tier-0 embedding pre-filter, then route the relevance +
@@ -111,7 +114,11 @@ def process_new_posting(
 
 
 def process_stage_a_approval(
-    application: Application, job: JobPosting, gmail_service, db_path: str | None = None, client=None
+    application: Application,
+    job: JobPosting,
+    gmail_service: Resource,
+    db_path: str | None = None,
+    client: anthropic.Anthropic | None = None,
 ) -> Application:
     """Run once the user approves the Stage A (job+resume) notification:
     generates the cover letter (the expensive Claude call, now deferred until
@@ -152,7 +159,11 @@ def process_stage_a_approval(
 
 
 def process_revision_request(
-    application: Application, job: JobPosting, gmail_service, db_path: str | None = None, client=None
+    application: Application,
+    job: JobPosting,
+    gmail_service: Resource,
+    db_path: str | None = None,
+    client: anthropic.Anthropic | None = None,
 ) -> Application:
     """Regenerate the cover letter incorporating the user's latest revision
     feedback (from `application.apply_log`), then re-send the

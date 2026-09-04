@@ -5,10 +5,17 @@ no modify/label scope, since JobFinder never needs to alter the user's inbox
 state beyond sending new messages). Credentials are cached in
 config.GMAIL_TOKEN_FILE (gitignored) so subsequent runs don't need a browser
 popup unless the refresh token itself is revoked.
+
+Pylance strict mode is downgraded to basic for this file only: google-auth /
+google-auth-oauthlib ship no py.typed type stubs, so strict-only checks
+(reportUnknownMemberType etc.) fire on essentially every call into them with
+no actionable fix available.
 """
+# pyright: basic
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -52,8 +59,11 @@ def load_credentials(
                 "complete the interactive login."
             )
         flow = InstalledAppFlow.from_client_secrets_file(str(client_secret_file), scopes)
-        creds = flow.run_local_server(port=0)
+        # google-auth-oauthlib's return type also covers external-account creds,
+        # which this project's Desktop-app OAuth flow never produces.
+        creds = cast(Credentials, flow.run_local_server(port=0))
 
+    assert creds is not None
     token_file.parent.mkdir(parents=True, exist_ok=True)
     token_file.write_text(creds.to_json(), encoding="utf-8")
     return creds

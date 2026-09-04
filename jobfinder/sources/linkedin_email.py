@@ -23,6 +23,7 @@ import re
 from pathlib import Path
 
 from bs4 import BeautifulSoup
+from googleapiclient.discovery import Resource  # type: ignore
 
 from jobfinder.db import store
 from jobfinder.db.models import ApplyMethod, JobPosting
@@ -95,11 +96,11 @@ def _parse_job_cards(html: str) -> list[dict]:
 class LinkedInEmailSource(JobSource):
     name = "linkedin"
 
-    def __init__(self, gmail_service=None, db_path: Path | str | None = None):
+    def __init__(self, gmail_service: Resource | None = None, db_path: Path | str | None = None):
         self._gmail_service = gmail_service
         self._db_path = db_path
 
-    def _service(self):
+    def _service(self) -> Resource:
         if self._gmail_service is None:
             from jobfinder.gmail.auth import get_gmail_service
 

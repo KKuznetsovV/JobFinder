@@ -184,6 +184,6 @@ def test_run_apply_loop_exhausts_max_steps(mocker):
 
 def test_execute_tool_stale_ref_returns_error_without_crashing():
     page = FakePage([])
-    result_text, ref_map = fallback._execute_tool(page, {}, "click_by_ref", {"ref": "e5"})
+    result_text, ref_map = fallback.execute_tool(page, {}, "click_by_ref", {"ref": "e5"})
 
     assert "error" in result_text.lower()

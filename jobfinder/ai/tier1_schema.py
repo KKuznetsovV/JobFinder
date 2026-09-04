@@ -8,6 +8,7 @@ inference time must match what the model was fine-tuned on.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 OUTPUT_SCHEMA_DESCRIPTION = """\
 Respond with ONLY a JSON object, no prose, no markdown fences:
@@ -45,7 +46,7 @@ def build_input_text(title: str, company: str, description: str) -> str:
     return f"Title: {title}\nCompany: {company}\nDescription: {description}"
 
 
-def parse_model_output(text: str) -> dict | None:
+def parse_model_output(text: str) -> dict[str, Any] | None:
     """Parse a model's JSON response, tolerating ```json ... ``` markdown
     fences around it (seen in practice even when the prompt says not to)."""
     stripped = text.strip()

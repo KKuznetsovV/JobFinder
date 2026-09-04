@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Any
 
 import anthropic
 
@@ -38,7 +39,7 @@ def get_client() -> anthropic.Anthropic:
     return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY, default_headers=headers)
 
 
-def create_message_with_retry(client: anthropic.Anthropic, **kwargs):
+def create_message_with_retry(client: anthropic.Anthropic, **kwargs: Any) -> anthropic.types.Message:
     """Call `client.messages.create(**kwargs)`, retrying on transient errors
     with exponential backoff. Raises the last exception if all retries are
     exhausted."""

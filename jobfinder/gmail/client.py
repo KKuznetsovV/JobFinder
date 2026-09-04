@@ -10,16 +10,17 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from googleapiclient.discovery import Resource
+from googleapiclient.discovery import Resource  # type: ignore
 
 
 def list_message_ids(service: Resource, query: str, user_id: str = "me") -> list[str]:
     """Return all message ids matching a Gmail search query, following pagination."""
+    svc: Any = service
     ids: list[str] = []
     page_token = None
     while True:
         response = (
-            service.users()
+            svc.users()
             .messages()
             .list(userId=user_id, q=query, pageToken=page_token)
             .execute()
@@ -33,11 +34,13 @@ def list_message_ids(service: Resource, query: str, user_id: str = "me") -> list
 def get_message(
     service: Resource, message_id: str, user_id: str = "me", format: str = "full"
 ) -> dict[str, Any]:
-    return service.users().messages().get(userId=user_id, id=message_id, format=format).execute()
+    svc: Any = service
+    return svc.users().messages().get(userId=user_id, id=message_id, format=format).execute()
 
 
 def get_thread(service: Resource, thread_id: str, user_id: str = "me") -> dict[str, Any]:
-    return service.users().threads().get(userId=user_id, id=thread_id, format="full").execute()
+    svc: Any = service
+    return svc.users().threads().get(userId=user_id, id=thread_id, format="full").execute()
 
 
 def send_raw_message(
@@ -55,4 +58,5 @@ def send_raw_message(
     body: dict[str, Any] = {"raw": base64.urlsafe_b64encode(raw_rfc822_bytes).decode("ascii")}
     if thread_id:
         body["threadId"] = thread_id
-    return service.users().messages().send(userId=user_id, body=body).execute()
+    svc: Any = service
+    return svc.users().messages().send(userId=user_id, body=body).execute()
